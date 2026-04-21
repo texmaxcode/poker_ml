@@ -1,0 +1,31 @@
+# Build the Linux snap (Snap Store / Ubuntu App Center) when snap or app sources change.
+
+name: Snap (Linux)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, stage, master]
+    paths:
+      - "snap/**"
+      - "poker/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/build-snap.yml"
+
+env:
+  QTFRAMEWORK_BYPASS_LICENSE_CHECK: "1"
+
+jobs:
+  snap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: snapcore/action-build@v1
+        id: snapcraft
+
+      - name: Upload snap artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: texas-holdem-gym-snap
+          path: ${{ steps.snapcraft.outputs.snap }}

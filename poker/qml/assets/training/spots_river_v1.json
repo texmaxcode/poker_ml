@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "format": "river_spots_v1",
+  "defaults": {
+    "stackBb": 100,
+    "potBb": 5.5,
+    "currency": "bb",
+    "heroPosition": "BTN",
+    "villainPosition": "BB",
+    "nodeId": "river_srp_btn_bb"
+  },
+  "spots": [
+    {
+      "id": "btnbb_river_AK729h_AJo",
+      "board": ["hearts_ace.svg", "diamonds_king.svg", "clubs_7.svg", "spades_2.svg", "hearts_9.svg"],
+      "heroCards": ["spades_ace.svg", "diamonds_jack.svg"],
+      "actions": {
+        "check": { "freq": 0.40, "evBb": 0.09, "tags": ["sdv"] },
+        "bet33": { "freq": 0.35, "evBb": 0.11, "tags": ["thin"] },
+        "bet75": { "freq": 0.25, "evBb": 0.10, "tags": ["polar"] }
+      }
+    },
+    {
+      "id": "btnbb_river_dry_runout_5c_AQo",
+      "board": ["hearts_ace.svg", "diamonds_7.svg", "clubs_2.svg", "spades_5.svg", "hearts_6.svg"],
+      "heroCards": ["spades_ace.svg", "clubs_queen.svg"],
+      "actions": {
+        "check": { "freq": 0.44, "evBb": 0.10, "tags": ["showdown"] },
+        "bet33": { "freq": 0.34, "evBb": 0.11, "tags": ["block"] },
+        "bet75": { "freq": 0.22, "evBb": 0.10, "tags": ["overbet_seldom"] }
+      }
+    },
+    {
+      "id": "btnbb_river_wet_four_98784_KTs",
+      "board": ["hearts_9.svg", "hearts_8.svg", "diamonds_7.svg", "clubs_4.svg", "spades_8.svg"],
+      "heroCards": ["spades_king.svg", "spades_10.svg"],
+      "actions": {
+        "check": { "freq": 0.39, "evBb": 0.08, "tags": ["pot_control"] },
+        "bet33": { "freq": 0.36, "evBb": 0.10, "tags": ["thin"] },
+        "bet75": { "freq": 0.25, "evBb": 0.09, "tags": ["bluff"] }
+      }
+    },
+    {
+      "id": "btnbb_river_paired_board_Qs_88",
+      "board": ["clubs_7.svg", "diamonds_7.svg", "hearts_2.svg", "spades_king.svg", "hearts_8.svg"],
+      "heroCards": ["spades_8.svg", "diamonds_8.svg"],
+      "actions": {
+        "check": { "freq": 0.41, "evBb": 0.12, "tags": ["trap"] },
+        "bet33": { "freq": 0.34, "evBb": 0.13, "tags": ["value"] },
+        "bet75": { "freq": 0.25, "evBb": 0.12, "tags": ["overbet_boat"] }
+      }
+    },
+    {
+      "id": "btnbb_river_four_flush_AhKhQh7h3h",
+      "board": ["hearts_ace.svg", "hearts_king.svg", "hearts_queen.svg", "hearts_7.svg", "hearts_3.svg"],
+      "heroCards": ["spades_jack.svg", "clubs_10.svg"],
+      "actions": {
+        "check": { "freq": 0.42, "evBb": 0.06, "tags": ["miss"] },
+        "bet33": { "freq": 0.33, "evBb": 0.08, "tags": ["blocker"] },
+        "bet75": { "freq": 0.25, "evBb": 0.07, "tags": ["bluff"] }
+      }
+    }
+  ]
+}

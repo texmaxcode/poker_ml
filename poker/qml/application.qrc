@@ -1,0 +1,120 @@
+<RCC>
+    <qresource prefix="/">
+        <file>PokerUi/qmldir</file>
+        <file>Theme/qmldir</file>
+        <file>Theme/Theme.qml</file>
+        <file>theme/Metrics.qml</file>
+        <file>theme/Fonts.qml</file>
+
+        <file>Main.qml</file>
+
+        <file>components/ThemedPanel.qml</file>
+        <file>components/GameButton.qml</file>
+        <file>components/BrandedBackground.qml</file>
+        <file>components/ThemedCheckBox.qml</file>
+        <file>components/ThemedSpinBox.qml</file>
+        <file>components/ThemedSwitch.qml</file>
+        <file>components/SizingPresetBar.qml</file>
+        <file>components/BotNames.qml</file>
+        <file>components/Card.qml</file>
+        <file>components/Table.qml</file>
+        <file>components/TableFelt.qml</file>
+        <file>components/TableBoardCard.qml</file>
+        <file>components/Player.qml</file>
+        <file>components/GameControls.qml</file>
+        <file>components/RangeGrid.qml</file>
+        <file>components/ResetButton.qml</file>
+
+        <file>screens/LobbyScreen.qml</file>
+        <file>screens/GameScreen.qml</file>
+        <file>screens/SetupScreen.qml</file>
+        <file>screens/SolverScreen.qml</file>
+        <file>screens/StatsScreen.qml</file>
+        <file>screens/TrainerHome.qml</file>
+        <file>screens/PreflopTrainer.qml</file>
+        <file>screens/FlopTrainer.qml</file>
+        <file>screens/TurnTrainer.qml</file>
+        <file>screens/RiverTrainer.qml</file>
+        <file>screens/RangeViewer.qml</file>
+        <file>screens/HandHistoryScreen.qml</file>
+
+        <file>assets/fonts/Merriweather-opsz-wdth-wght.ttf</file>
+        <file>assets/fonts/RobotoMono-wght.ttf</file>
+        <file>assets/fonts/Rye-Regular.ttf</file>
+        <file>assets/fonts/HoltwoodOneSC-Regular.ttf</file>
+
+        <file>assets/icons/home.svg</file>
+        <file>assets/icons/table.svg</file>
+        <file>assets/icons/bots.svg</file>
+
+        <file>assets/images/logo.png</file>
+        <file>assets/images/texas_holdem_icn.png</file>
+        <file>assets/images/bots_and_ranges.png</file>
+        <file>assets/images/solver_and_equity.png</file>
+        <file>assets/images/training.png</file>
+        <file>assets/images/stats.png</file>
+        <file>assets/images/hands.png</file>
+
+        <file>assets/training/preflop_ranges_v1.json</file>
+        <file>assets/training/spots_v1.json</file>
+        <file>assets/training/spots_turn_v1.json</file>
+        <file>assets/training/spots_river_v1.json</file>
+
+        <file>assets/cards/blue2.svg</file>
+        <file>assets/cards/clubs_ace.svg</file>
+        <file>assets/cards/clubs_king.svg</file>
+        <file>assets/cards/clubs_queen.svg</file>
+        <file>assets/cards/clubs_jack.svg</file>
+        <file>assets/cards/clubs_10.svg</file>
+        <file>assets/cards/clubs_9.svg</file>
+        <file>assets/cards/clubs_8.svg</file>
+        <file>assets/cards/clubs_7.svg</file>
+        <file>assets/cards/clubs_6.svg</file>
+        <file>assets/cards/clubs_5.svg</file>
+        <file>assets/cards/clubs_4.svg</file>
+        <file>assets/cards/clubs_3.svg</file>
+        <file>assets/cards/clubs_2.svg</file>
+
+        <file>assets/cards/spades_ace.svg</file>
+        <file>assets/cards/spades_king.svg</file>
+        <file>assets/cards/spades_queen.svg</file>
+        <file>assets/cards/spades_jack.svg</file>
+        <file>assets/cards/spades_10.svg</file>
+        <file>assets/cards/spades_9.svg</file>
+        <file>assets/cards/spades_8.svg</file>
+        <file>assets/cards/spades_7.svg</file>
+        <file>assets/cards/spades_6.svg</file>
+        <file>assets/cards/spades_5.svg</file>
+        <file>assets/cards/spades_4.svg</file>
+        <file>assets/cards/spades_3.svg</file>
+        <file>assets/cards/spades_2.svg</file>
+
+        <file>assets/cards/diamonds_ace.svg</file>
+        <file>assets/cards/diamonds_king.svg</file>
+        <file>assets/cards/diamonds_queen.svg</file>
+        <file>assets/cards/diamonds_jack.svg</file>
+        <file>assets/cards/diamonds_10.svg</file>
+        <file>assets/cards/diamonds_9.svg</file>
+        <file>assets/cards/diamonds_8.svg</file>
+        <file>assets/cards/diamonds_7.svg</file>
+        <file>assets/cards/diamonds_6.svg</file>
+        <file>assets/cards/diamonds_5.svg</file>
+        <file>assets/cards/diamonds_4.svg</file>
+        <file>assets/cards/diamonds_3.svg</file>
+        <file>assets/cards/diamonds_2.svg</file>
+
+        <file>assets/cards/hearts_ace.svg</file>
+        <file>assets/cards/hearts_king.svg</file>
+        <file>assets/cards/hearts_queen.svg</file>
+        <file>assets/cards/hearts_jack.svg</file>
+        <file>assets/cards/hearts_10.svg</file>
+        <file>assets/cards/hearts_9.svg</file>
+        <file>assets/cards/hearts_8.svg</file>
+        <file>assets/cards/hearts_7.svg</file>
+        <file>assets/cards/hearts_6.svg</file>
+        <file>assets/cards/hearts_5.svg</file>
+        <file>assets/cards/hearts_4.svg</file>
+        <file>assets/cards/hearts_3.svg</file>
+        <file>assets/cards/hearts_2.svg</file>
+    </qresource>
+</RCC>

@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "format": "flop_spots_v1",
+  "defaults": {
+    "stackBb": 100,
+    "potBb": 5.5,
+    "currency": "bb",
+    "heroPosition": "BTN",
+    "villainPosition": "BB",
+    "nodeId": "flop_bb_check_hero_btn"
+  },
+  "spots": [
+    {
+      "id": "btnbb_flop_dry_A72_AK",
+      "board": ["hearts_ace.svg", "diamonds_7.svg", "clubs_2.svg"],
+      "heroCards": ["spades_king.svg", "clubs_queen.svg"],
+      "actions": {
+        "check": { "freq": 0.25, "evBb": 0.12, "tags": ["range_bet"] },
+        "bet33": { "freq": 0.55, "evBb": 0.15, "tags": ["small_cbet"] },
+        "bet75": { "freq": 0.20, "evBb": 0.14, "tags": ["polar"] }
+      }
+    },
+    {
+      "id": "btnbb_flop_wet_987hh_AQo",
+      "board": ["hearts_9.svg", "hearts_8.svg", "diamonds_7.svg"],
+      "heroCards": ["spades_ace.svg", "clubs_queen.svg"],
+      "actions": {
+        "check": { "freq": 0.55, "evBb": 0.08, "tags": ["check_more"] },
+        "bet33": { "freq": 0.35, "evBb": 0.10, "tags": ["protect"] },
+        "bet75": { "freq": 0.10, "evBb": 0.09, "tags": ["polar"] }
+      }
+    },
+    {
+      "id": "btnbb_flop_paired_772_KQs",
+      "board": ["clubs_7.svg", "diamonds_7.svg", "hearts_2.svg"],
+      "heroCards": ["spades_king.svg", "spades_queen.svg"],
+      "actions": {
+        "check": { "freq": 0.45, "evBb": 0.11, "tags": ["check_range"] },
+        "bet33": { "freq": 0.40, "evBb": 0.12, "tags": ["range_bet"] },
+        "bet75": { "freq": 0.15, "evBb": 0.12, "tags": ["polar"] }
+      }
+    }
+  ]
+}
+

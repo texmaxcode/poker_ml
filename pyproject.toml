@@ -1,0 +1,52 @@
+ [build-system]
+ requires = ["setuptools>=69", "wheel"]
+ build-backend = "setuptools.build_meta"
+ 
+ [project]
+ name = "texas-holdem-gym"
+ version = "0.1.0"
+ description = "Texas Hold'em Gym (Qt for Python / QML)"
+ readme = "README.md"
+ requires-python = ">=3.10"
+ dependencies = [
+   "PySide6>=6.7",
+ ]
+ 
+[project.scripts]
+texas-holdem-gym = "texasholdemgym.app:main"
+texas-holdem-parquet-export = "texasholdemgym.parquet_export:main"
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8",
+  "pandas>=2.0",
+  "pyarrow>=14",
+]
+analysis = [
+  "pandas>=2.0",
+  "pyarrow>=14",
+  "matplotlib>=3.8",
+]
+dev = [
+  "ruff>=0.9",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Pyflakes only by default — avoids noisy legacy whitespace (W29x) across the tree.
+# Run `ruff check --extend-select E,W,I` locally if tightening style.
+select = ["F"]
+ignore = []
+ 
+ [tool.setuptools]
+ package-dir = {"" = "src"}
+ 
+ [tool.setuptools.packages.find]
+ where = ["src"]
+ 
+ [tool.setuptools.package-data]
+ texasholdemgym = ["../poker/qml/**"]

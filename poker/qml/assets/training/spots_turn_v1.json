@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "format": "turn_spots_v1",
+  "defaults": {
+    "stackBb": 100,
+    "potBb": 5.5,
+    "currency": "bb",
+    "heroPosition": "BTN",
+    "villainPosition": "BB",
+    "nodeId": "turn_srp_btn_bb"
+  },
+  "spots": [
+    {
+      "id": "btnbb_turn_AK72_brick_KQo",
+      "board": ["hearts_ace.svg", "diamonds_king.svg", "clubs_7.svg", "spades_2.svg"],
+      "heroCards": ["spades_king.svg", "clubs_queen.svg"],
+      "actions": {
+        "check": { "freq": 0.40, "evBb": 0.10, "tags": ["pot_control"] },
+        "bet33": { "freq": 0.35, "evBb": 0.12, "tags": ["thin_value"] },
+        "bet75": { "freq": 0.25, "evBb": 0.11, "tags": ["polar"] }
+      }
+    },
+    {
+      "id": "btnbb_turn_A72_5s_KJo",
+      "board": ["hearts_ace.svg", "diamonds_7.svg", "clubs_2.svg", "spades_5.svg"],
+      "heroCards": ["spades_king.svg", "diamonds_jack.svg"],
+      "actions": {
+        "check": { "freq": 0.42, "evBb": 0.09, "tags": ["showdown"] },
+        "bet33": { "freq": 0.33, "evBb": 0.11, "tags": ["block_bet"] },
+        "bet75": { "freq": 0.25, "evBb": 0.10, "tags": ["overbet_rare"] }
+      }
+    },
+    {
+      "id": "btnbb_turn_wet_987_4c_AQo",
+      "board": ["hearts_9.svg", "hearts_8.svg", "diamonds_7.svg", "clubs_4.svg"],
+      "heroCards": ["spades_ace.svg", "clubs_queen.svg"],
+      "actions": {
+        "check": { "freq": 0.38, "evBb": 0.08, "tags": ["pot_control"] },
+        "bet33": { "freq": 0.37, "evBb": 0.11, "tags": ["protect"] },
+        "bet75": { "freq": 0.25, "evBb": 0.09, "tags": ["polar"] }
+      }
+    },
+    {
+      "id": "btnbb_turn_paired_772_Ks_QQs",
+      "board": ["clubs_7.svg", "diamonds_7.svg", "hearts_2.svg", "spades_king.svg"],
+      "heroCards": ["spades_queen.svg", "diamonds_queen.svg"],
+      "actions": {
+        "check": { "freq": 0.45, "evBb": 0.11, "tags": ["trap"] },
+        "bet33": { "freq": 0.32, "evBb": 0.12, "tags": ["thin"] },
+        "bet75": { "freq": 0.23, "evBb": 0.11, "tags": ["value"] }
+      }
+    },
+    {
+      "id": "btnbb_turn_mono_flush_draw_3h",
+      "board": ["hearts_ace.svg", "hearts_king.svg", "hearts_7.svg", "hearts_3.svg"],
+      "heroCards": ["spades_queen.svg", "clubs_jack.svg"],
+      "actions": {
+        "check": { "freq": 0.35, "evBb": 0.07, "tags": ["showdown"] },
+        "bet33": { "freq": 0.40, "evBb": 0.10, "tags": ["blocker"] },
+        "bet75": { "freq": 0.25, "evBb": 0.09, "tags": ["pressure"] }
+      }
+    }
+  ]
+}
