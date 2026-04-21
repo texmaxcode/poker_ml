@@ -43,9 +43,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-latest, macos-latest]
         python-version: ["3.11", "3.12"]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -59,6 +58,12 @@ jobs:
           python -m pip install -U pip
           python -m pip install -e ".[test]"
 
+      # PySide6 loads libEGL at import time; GitHub-hosted Ubuntu images omit it by default.
+      - name: Install Qt headless system libs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1
+
       - name: Test
         run: pytest -q
 
@@ -70,5 +75,5 @@ jobs:
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: dist-${{ matrix.os }}-py${{ matrix.python-version }}
+          name: dist-ubuntu-py${{ matrix.python-version }}
           path: dist/*
