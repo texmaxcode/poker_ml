@@ -2,9 +2,9 @@
   <img src="poker/qml/assets/images/logo.png" alt="Texas Hold’em Gym" width="420" />
 </p>
 
-# Texas Hold’em Gym
+# Texas Hold’em Gym ML
 
-**Texas Hold’em Gym** is a desktop app built with **Qt 6 (QML / Qt Quick)**, running on **Qt for Python (PySide6)**.
+**Texas Hold’em Gym ML** is a desktop app built with **Qt 6 (QML / Qt Quick)**, running on **Qt for Python (PySide6)**.
 
 The **QML UI** is the primary surface; the **Python backend** implements the poker engine, persistence, and Qt object bridges.
 
