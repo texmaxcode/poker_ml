@@ -11,7 +11,7 @@ The **QML UI** is the primary surface; the **Python backend** implements the pok
 ## What’s in the box
 
 - **QML UI**: lobby, table screens, setup, solver, trainers, stats, hand history.
-- **Python backend**: `PokerGame`, SQLite hand log, training stubs, QML context wiring.
+- **Python backend**: `PokerGame` / `NlhHandEngine`, SQLite hand log and KV state, training drills (`Trainer` / `TrainingStore`), QML context wiring.
 
 ## Repository layout
 
@@ -54,11 +54,41 @@ See **[`docs/README.md`](docs/README.md)** for the index. Main entries:
 ## Tests
 
 ```bash
-pip install -e '.[test]'
-python -m pytest tests/
+pip install -e .              # pytest + Coverage.py (`coverage[toml]`, see `pyproject.toml`)
+pip install -e '.[test]'      # pandas / pyarrow for Parquet + export tests
 ```
 
-CI runs **Ruff** (pyflakes), **byte-compile**, **pytest**, and **`python -m build`** — see [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+**`pytest` alone** does not pass **`--cov`** (so it never errors if an older env lacks plugins). For **line + branch** coverage, a **terminal report** (missing lines, `--skip-covered`), and **`fail_under` 80%** from **`pyproject.toml`**, run the packaged helper (from the repo root, or anywhere if `pyproject.toml` + `src/texasholdemgym` are discoverable):
+
+```bash
+texas-holdem-gym-test              # same as: coverage run -m pytest -q && coverage report -m --skip-covered
+texas-holdem-gym-test --html       # also writes htmlcov/
+texas-holdem-gym-test tests/test_foo.py   # optional pytest path / kwargs
+```
+
+Equivalent manual invocation from the repository root:
+
+```bash
+coverage run -m pytest -q
+coverage report -m --skip-covered
+```
+
+Quick test runs without coverage:
+
+```bash
+pytest -q
+pytest -q tests/test_foo.py
+```
+
+**What the 80% gate measures:** everything under `src/texasholdemgym/` **except** modules that are mostly integration glue or optional CLIs (see `[tool.coverage.run] omit` in `pyproject.toml`): **`app.py`** (GUI entry), **`backend/poker_game.py`** (large Qt/QML bridge), **`parquet_export.py`** (optional Parquet CLI, also covered by `tests/test_parquet_export.py` when pandas/pyarrow are installed). Adjust `omit` or add tests if you intentionally expand scope.
+
+Optional dead-code scan (requires `pip install -e '.[dev]'`):
+
+```bash
+vulture src/texasholdemgym --min-confidence 80
+```
+
+CI runs **Ruff** (pyflakes), **byte-compile**, **`texas-holdem-gym-test`** (coverage + report + gate), and **`python -m build`** — see [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Development tools
 

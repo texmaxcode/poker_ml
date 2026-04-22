@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-import time
 from pathlib import Path
 from typing import Any
 
@@ -349,15 +348,6 @@ class AppDatabase:
     def kv_delete(self, key: str) -> None:
         self._conn.execute("DELETE FROM kv WHERE k = ?", (key,))
         self._conn.commit()
-
-    def insert_hand(self, started_ms: int, ended_ms: int, payload: dict[str, Any]) -> int:
-        cur = self._conn.cursor()
-        cur.execute(
-            "INSERT INTO hands_py(started_ms, ended_ms, payload) VALUES(?, ?, ?)",
-            (int(started_ms), int(ended_ms), json.dumps(payload, separators=(",", ":"))),
-        )
-        self._conn.commit()
-        return int(cur.lastrowid)
 
     def insert_hand_log(self, payload: dict[str, Any]) -> int:
         """Insert one completed hand into `hands` / `actions` / `players`."""
@@ -761,7 +751,3 @@ class AppDatabase:
             self._conn.execute("DELETE FROM poker_hands")
         self._conn.execute("DELETE FROM hands_py")
         self._conn.commit()
-
-    @staticmethod
-    def now_ms() -> int:
-        return int(time.time() * 1000)

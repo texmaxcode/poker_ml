@@ -49,8 +49,8 @@ def test_poker_game_range_grid_hole_cell_matches_qml_convention():
 def test_poker_game_count_eligible_for_deal():
     g = PokerGame()
     try:
-        g._seat_buy_in = [100, 0, 100, 100, 100, 100]
-        g._seat_participating = [True, True, False, True, True, True]
+        g._table.import_stacks([100, 0, 100, 100, 100, 100])
+        g._table.import_participating([True, True, False, True, True, True])
         g._human_sitting_out = False
         assert g._count_eligible_for_deal() == 4
         g._human_sitting_out = True
@@ -64,13 +64,13 @@ def test_poker_game_begin_new_hand_uses_fresh_dealing_mask_not_stale_in_hand():
     game = PokerGame()
     try:
         for i in range(6):
-            game._in_hand[i] = i in (0, 5)
-        game._button_seat = 2
+            game._live.in_hand[i] = i in (0, 5)
+        game._live.button_seat = 2
         game.beginNewHand()
         assert game.gameInProgress()
-        assert game._acting_seat >= 0
-        assert 0 <= game._sb_seat < 6 and 0 <= game._bb_seat < 6
-        assert game._sb_seat != game._bb_seat
+        assert game._live.acting_seat >= 0
+        assert 0 <= game._live.sb_seat < 6 and 0 <= game._live.bb_seat < 6
+        assert game._live.sb_seat != game._live.bb_seat
     finally:
         game.deleteLater()
 
@@ -122,13 +122,13 @@ def test_poker_game_decision_tick_advances_bots_without_separate_bot_timer():
     try:
         g.beginNewHand()
         assert g.gameInProgress()
-        start = int(g._acting_seat)
+        start = int(g._live.acting_seat)
         assert start >= 0
         for _ in range(35):
             g._tick_decision()
-            if int(g._acting_seat) != start or not g.gameInProgress():
+            if int(g._live.acting_seat) != start or not g.gameInProgress():
                 break
-        assert int(g._acting_seat) != start or not g.gameInProgress()
+        assert int(g._live.acting_seat) != start or not g.gameInProgress()
     finally:
         g.deleteLater()
 
@@ -136,10 +136,10 @@ def test_poker_game_decision_tick_advances_bots_without_separate_bot_timer():
 def test_poker_game_seat_position_label_full_ring():
     g = PokerGame()
     try:
-        g._button_seat = 0
-        g._sb_seat = 1
-        g._bb_seat = 2
-        g._seat_participating = [True] * 6
+        g._live.button_seat = 0
+        g._live.sb_seat = 1
+        g._live.bb_seat = 2
+        g._table.import_participating([True] * 6)
         assert g.seatPositionLabel(0) == "BTN"
         assert g.seatPositionLabel(1) == "SB"
         assert g.seatPositionLabel(2) == "BB"
@@ -153,7 +153,85 @@ def test_poker_game_seat_position_label_full_ring():
 def test_poker_game_seat_position_label_before_deal():
     g = PokerGame()
     try:
-        g._bb_seat = -1
+        g._live.bb_seat = -1
         assert g.seatPositionLabel(0) == "—"
+    finally:
+        g.deleteLater()
+
+
+def test_poker_game_set_root_clears_without_leak():
+    """Tear down the QML root, drop connections, and allow rebinding a new object."""
+    _ = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+    a = QtCore.QObject()
+    b = QtCore.QObject()
+    g = PokerGame()
+    try:
+        g.setRootObject(a)
+        g.setRootObject(b)
+        assert g._root_obj is b
+        g.setRootObject(None)
+        assert g._root_obj is None
+    finally:
+        a.deleteLater()
+        b.deleteLater()
+        g.deleteLater()
+
+
+def test_poker_game_emit_stats_seq_bumps_on_buy_in_and_bankroll_tweak():
+    g = PokerGame()
+    try:
+        s0, s1 = int(g.statsSeq), int(g.statsSeq)
+        g.setSeatBuyIn(0, 150)
+        s1 = int(g.statsSeq)
+        assert s1 > s0
+        g.setSeatBankrollTotal(0, 5000)
+        assert int(g.statsSeq) > s1
+    finally:
+        g.deleteLater()
+
+
+def test_poker_game_game_screen_button_ids_use_class_constants():
+    g = PokerGame()
+    try:
+        assert g._GAME_SCREEN_BTN_MORE_TIME == "MORE_TIME"
+        g._on_game_screen_button("MORE_TIME")
+    finally:
+        g.deleteLater()
+
+
+def test_poker_game_facing_action_codes_match_qml_contract():
+    """`GameScreen` passes 0/1/2+ to `submitFacingAction`; must stay stable for QML."""
+    g = PokerGame()
+    try:
+        assert g._FACING_FOLD == 0
+        assert g._FACING_CALL == 1
+    finally:
+        g.deleteLater()
+
+
+def test_poker_game_submit_check_or_bet_triggers_call_when_hero_must_match():
+    """`submitCheckOrBet(check=True, …)` calls the engine `call` path when `chips_needed_to_call` > 0."""
+    _ = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+    g = PokerGame(db=None, hand_history=None)
+    g.setRootObject(QtCore.QObject())
+    g._interactive_human = True
+    try:
+        hs = int(g.HUMAN_HERO_SEAT)
+        g._live.in_progress = True
+        g._live.bb_preflop_waiting = False
+        g._live.acting_seat = hs
+        g._live.street = 1
+        g._live.in_hand[:] = [True] * 6
+        for i in range(6):
+            g._player(i).participating = True
+            g._player(i).stack_on_table = 200
+        g._hand_accounting.clear_for_new_hand()
+        g._hand_accounting.reset_street(1, int(g._table.big_blind))
+        g._hand_accounting.to_call = 2
+        g._hand_accounting.set_street_put_in(hs, 0)
+        g._live.init_street_acted(g._table.participating_list(), g._live.in_hand, g._table.stacks_list())
+        assert g._hand_accounting.chips_needed_to_call(hs) > 0
+        g.submitCheckOrBet(True, 0)
+        assert "Call" in g._live.street_action_text[hs]
     finally:
         g.deleteLater()

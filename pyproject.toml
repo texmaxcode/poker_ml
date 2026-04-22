@@ -10,15 +10,18 @@
  requires-python = ">=3.10"
  dependencies = [
    "PySide6>=6.7",
+   "pytest>=8",
+   # Terminal coverage + `fail_under` without the pytest-cov plugin (`texas-holdem-gym-test`).
+   "coverage[toml]>=7",
  ]
  
 [project.scripts]
 texas-holdem-gym = "texasholdemgym.app:main"
 texas-holdem-parquet-export = "texasholdemgym.parquet_export:main"
+texas-holdem-gym-test = "texasholdemgym.test_runner:main"
 
 [project.optional-dependencies]
 test = [
-  "pytest>=8",
   "pandas>=2.0",
   "pyarrow>=14",
 ]
@@ -29,7 +32,36 @@ analysis = [
 ]
 dev = [
   "ruff>=0.9",
+  "vulture>=2.11",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Coverage uses `coverage run` / `coverage report` (see `texas-holdem-gym-test`), not pytest-cov `addopts`.
+
+[tool.coverage.run]
+branch = true
+source = ["texasholdemgym"]
+omit = [
+  # CLI wrapper for `coverage run` (not part of the app under test).
+  "*/texasholdemgym/test_runner.py",
+  # GUI entry: exercised manually / via QML smoke tests, not the unit coverage gate.
+  "*/texasholdemgym/app.py",
+  # Large Qt bridge: scenario + QML tests cover behavior; gate focuses on pure/backend modules.
+  "*/texasholdemgym/backend/poker_game.py",
+  # Optional CLI + pandas path; requires `.[analysis]` and has its own smoke tests.
+  "*/texasholdemgym/parquet_export.py",
+]
+
+[tool.coverage.report]
+precision = 0
+show_missing = true
+skip_covered = true
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+]
+fail_under = 80
 
 [tool.ruff]
 target-version = "py310"

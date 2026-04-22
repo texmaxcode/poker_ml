@@ -64,8 +64,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libegl1 libgl1
 
-      - name: Test
-        run: pytest -q
+      - name: Test (pytest + coverage report + fail_under)
+        run: texas-holdem-gym-test
 
       - name: Build sdist and wheel
         run: |
