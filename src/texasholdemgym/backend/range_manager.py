@@ -144,3 +144,19 @@ class RangeManager:
                         for i, x in enumerate(vals[:169]):
                             g[i] = float(x)
                         self._grid[(si, li)] = g
+
+    def load_persisted(self, db: Any) -> None:
+        """Rehydrate grids + text from the app KV (see :mod:`game_state_persist`)."""
+        if db is None:
+            return
+        from texasholdemgym.backend.game_state_persist import RANGES_BUNDLE_KEY
+
+        self.apply_bundle(db.kv_get_json(RANGES_BUNDLE_KEY))
+        self._touch()
+
+    def save_persisted(self, db: Any) -> None:
+        if db is None:
+            return
+        from texasholdemgym.backend.game_state_persist import RANGES_BUNDLE_KEY
+
+        db.kv_set_json(RANGES_BUNDLE_KEY, self.bundle())

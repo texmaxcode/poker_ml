@@ -44,6 +44,34 @@ def test_range_manager_load_preset_for_archetype() -> None:
     assert len(rm.ensure_grid(4, 0)) == 13 * 13
 
 
+def test_range_manager_load_save_persisted_to_kv(tmp_path) -> None:
+    from texasholdemgym.backend.game_state_persist import RANGES_BUNDLE_KEY
+    from texasholdemgym.backend.sqlite_store import AppDatabase
+
+    db = AppDatabase(tmp_path / "r.sqlite")
+    r1, r2 = RangeManager(), RangeManager()
+    r1.apply_parsed_grid(0, 0, [0.0] * 168 + [1.0])  # last cell distinct
+    r1.save_persisted(db)
+    assert isinstance(db.kv_get_json(RANGES_BUNDLE_KEY), dict)
+    r2.load_persisted(db)
+    assert r2.ensure_grid(0, 0)[-1] == 1.0
+    r2.load_persisted(None)  # no-op
+    r2.save_persisted(None)
+    db.close()
+
+
+def test_range_manager_apply_bundle_accepts_shorter_grid_padded() -> None:
+    m = {
+        "text": {},
+        "grid": {"0": {"0": [0.1] * 10}},
+    }
+    r = RangeManager()
+    r.apply_bundle(m)
+    g = r.ensure_grid(0, 0)
+    assert len(g) == 13 * 13
+    assert g[0] == 0.1
+
+
 def test_chart_weights_respect_custom_cell() -> None:
     rm = RangeManager()
     g = [0.0] * (13 * 13)

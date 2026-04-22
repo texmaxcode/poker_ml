@@ -67,7 +67,7 @@ def test_begin_betting_round_invalid_first_seat_awards_uncontested_when_one_play
         g._live.bb_seat = 0
         g._live.street = 0
         g._live.bb_preflop_option_open = False
-        g._begin_betting_round(-1)
+        g._engine.begin_betting_round(-1)
         assert not g.gameInProgress()
         assert g._live.acting_seat < 0
     finally:
