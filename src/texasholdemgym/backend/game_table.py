@@ -250,10 +250,6 @@ class Table:
     DEFAULT_BOT_NAMES: tuple[str, str, str, str, str] = TableMessages.DEFAULT_BOT_NAMES
 
     @staticmethod
-    def format_seat_display_name(seat: int, *, bot_names: tuple[str, ...] | None = None) -> str:
-        return TableMessages.seat_display_name(seat, bot_names)
-
-    @staticmethod
     def format_showdown_line(
         winner_seats: list[int],
         hand_label: str,

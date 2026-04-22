@@ -17,6 +17,11 @@ def _fresh_holes_sentinel() -> list[list[Card]]:
 
 @dataclass
 class LiveHandState:
+    """Per-hand state updated by `NlhHandEngine` (cards, board, who acts, UI copy).
+
+    Not persisted between deals except via hand history; cleared/reset in `begin_new_hand` / `reset_for_new_deal`.
+    """
+
     hand_seq: int = 0
     button_seat: int = 0
     sb_seat: int = 1

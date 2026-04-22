@@ -134,6 +134,33 @@ def test_client_flag_emits_when_interactive_toggles_on_load(tmp_path) -> None:
         db.close()
 
 
+def test_load_emits_bot_and_timing_sliders_when_values_change(tmp_path) -> None:
+    """`winningHandShowMs` / `botSlowActions` / `botDecisionDelaySec` emit when KV differs."""
+    _ = _qapp()
+    db = AppDatabase(tmp_path / "g.sqlite")
+    g = PokerGame()
+    g._winning_hand_show_ms = 1_000
+    g._bot_slow_actions = True
+    g._bot_decision_delay_sec = 1
+    save_table_client_to_db(db, g)
+    m = {**build_table_client_snapshot(g), "winningHandShowMs": 3_200, "botSlowActions": False, "botDecisionDelaySec": 3}
+    db.kv_set_json(GAME_STATE_KV_KEY, m)  # type: ignore[arg-type]
+    try:
+        spy_w = QtTest.QSignalSpy(g.winningHandShowMsChanged)
+        spy_b = QtTest.QSignalSpy(g.botSlowActionsChanged)
+        spy_d = QtTest.QSignalSpy(g.botDecisionDelaySecChanged)
+        assert load_table_client_from_db(db, g)
+        assert g._winning_hand_show_ms == 3_200
+        assert g._bot_slow_actions is False
+        assert g._bot_decision_delay_sec == 3
+        assert spy_w.count() >= 1
+        assert spy_b.count() >= 1
+        assert spy_d.count() >= 1
+    finally:
+        g.deleteLater()
+        db.close()
+
+
 def test_clear_game_and_range_kv_removes_both_keys(tmp_path) -> None:
     db = AppDatabase(tmp_path / "f.sqlite")
     db.kv_set_json(GAME_STATE_KV_KEY, {"a": 1})

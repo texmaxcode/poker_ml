@@ -11,7 +11,7 @@ The **QML UI** is the primary surface; the **Python backend** implements the pok
 ## What’s in the box
 
 - **QML UI**: lobby, table screens, setup, solver, trainers, stats, hand history.
-- **Python backend**: `PokerGame`, SQLite hand log, training stubs, QML context wiring.
+- **Python backend**: `PokerGame` / `NlhHandEngine`, SQLite hand log and KV state, training drills (`Trainer` / `TrainingStore`), QML context wiring.
 
 ## Repository layout
 

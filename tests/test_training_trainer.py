@@ -1,4 +1,4 @@
-"""Trainer / TrainingStore: question payloads must expose QML-safe card asset keys (.svg)."""
+"""Trainer / `TrainingStore`: QML card keys, progress accounting, and drill bucketing."""
 
 
 def test_training_store_records_drill_stats_and_load_progress_keys():
@@ -64,3 +64,25 @@ def test_trainer_questions_include_svg_card_keys_for_qml():
     finally:
         trainer.deleteLater()
         store.deleteLater()
+
+
+def test_record_drill_unknown_name_maps_to_preflop_bucket() -> None:
+    from texasholdemgym.backend.training import TrainingStore
+
+    st = TrainingStore()
+    try:
+        st.record_drill_answer("custom_drill", "Correct", 1.0, 0.0)
+        m = st.loadProgress()
+        assert m["drillStats"]["preflop"]["totalD"] == 1
+        assert m["drillStats"]["flop"]["totalD"] == 0
+    finally:
+        st.deleteLater()
+
+
+def test_drill_buckets_from_dict_tolerates_malformed_kv() -> None:
+    from texasholdemgym.backend import training
+
+    b = training._DrillBuckets.from_dict("not a dict")  # type: ignore[attr-defined]
+    assert b.bucket("turn").totalD == 0
+    b2 = training._DrillBuckets.from_dict({"turn": "bad", "river": {}})  # type: ignore[attr-defined]
+    assert b2.bucket("turn").totalD == 0

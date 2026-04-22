@@ -9,12 +9,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6 import QtWidgets
 
-from texasholdemgym.backend.game_screen_sync import sync_game_screen_properties
+from texasholdemgym.backend.game_screen_sync import _pot_slice_amounts_for_qml, sync_game_screen_properties
 from texasholdemgym.backend.poker_game import PokerGame
 
 
 def _app():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+
+
+def test_pot_slice_helper_accepts_mixed_dict_and_int_rows() -> None:
+    assert _pot_slice_amounts_for_qml([]) == []
+    assert _pot_slice_amounts_for_qml([{"amount": 10}, 5, {"no_amount": 1}]) == [10, 5, 0]
 
 
 def test_sync_game_screen_properties_smoke_collects_keys() -> None:

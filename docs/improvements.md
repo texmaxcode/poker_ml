@@ -12,10 +12,13 @@ All current tests pass (`pytest tests/ -v`). The following areas are **not** ful
 
 | Module | What it exercises |
 |--------|-------------------|
-| `tests/test_poker_engine_expectations.py` | Timer/HUD/recovery expectations on `PokerGame` (no QML). |
+| `tests/test_poker_engine_expectations.py` | Timer/HUD/recovery on `PokerGame` (delegates to `NlhHandEngine` for betting); no QML. |
 | `tests/test_qml_integration.py` | Headless load of `qrc:/Main.qml`, `findChild(..., "game_screen")`, `setRootObject` + `actingSeat`/`pot` sync, attach-root after off-screen `beginNewHand`. |
-| `tests/test_poker_game.py` | `PokerGame` lifecycle, range grid mapping, SQLite hand completion, `MORE_TIME`, decision tick. |
-| `tests/test_sqlite_store.py` | `AppDatabase` path, KV, relational hand log. |
+| `tests/test_poker_game.py` | `PokerGame` setup, `GameScreen` buttons, `submitCheckOrBet`, `setRootObject`, `statsSeq` bumps, SQLite when DB attached. |
+| `tests/test_nlh_table_engine.py` | `NlhHandEngine` on a real `PokerGame` (Qt app via `tests/conftest.py`). |
+| `tests/test_game_state_persist.py` | SQLite KV round-trip for `save_table_client_to_db` / `load_table_client_from_db` / `clear_game_and_range_kv`. |
+| `tests/test_session_stats.py` | `BankrollSessionStats` snapshots and ranking rows. |
+| `tests/test_sqlite_store.py` | `AppDatabase` path, KV, relational `insert_hand_log` / hand list / detail. |
 | `tests/test_training_trainer.py` | Trainer question payloads (SVG keys for QML). |
 | `tests/test_backend_smoke.py` | `ToyNashSolver` / `PokerSolver` async signals, `SessionStore` without DB, `TrainingStore` defaults. |
 | `tests/test_bot_strategy.py` | `bot_strategy` presets and probability helpers. |
@@ -25,13 +28,12 @@ All current tests pass (`pytest tests/ -v`). The following areas are **not** ful
 
 | Area | Gap |
 |------|-----|
-| **HUD sync drift** | `_decision_seconds_displayed` in `test_poker_engine_expectations.py` duplicates `_sync_root`; consider one helper on `PokerGame`. |
+| **HUD sync drift** | `_decision_seconds_displayed` in `test_poker_engine_expectations.py` mirrors HUD rules from `PokerGame` / `game_screen_sync`; could share a small pure helper. |
 | **Human full hand** | No end-to-end with `interactiveHuman=True` and `submitFacingAction` / `buttonClicked` through the full hand in QML. |
-| **`app.py` startup** | `_bind_game_screen` retry loop and `_GameScreenButtonRouter` wiring are not exercised by loading `main()` in tests (only engine + objects in tests). |
-| **BB preflop option** | No dedicated test for `_bb_preflop_waiting`, `submitBbPreflopRaise`, BB check timeout. |
+| **`app.py` startup** | `_try_bind_game_screen` retry in `app.main` is not covered by a full `main()` integration test (QML smoke uses `qml` tests and manual runs). |
+| **BB preflop option** | No dedicated test for `bb_preflop_waiting`, `submitBbPreflopRaise`, BB check timeout. |
 | **Next-hand timer** | No test that `_next_hand_timer` fires and starts a second hand with QML bound. |
 | **Side pots / showdown** | No assertions on multi-way side-pot chip counts vs a reference vector. |
-| **KV persistence** | No round-trip test for full `poker_game_state_v1` load/save through `PokerGame`. |
 
 ---
 
@@ -66,7 +68,7 @@ Setup toggles **seats 1–5** only. The human seat is controlled by **Sit out** 
 
 ### Strategy names
 
-`strategyDisplayNames()` is currently a minimal stub. Until expanded, a Setup footnote such as **“Simplified bot strategies in this build”** can set expectations.
+`strategyDisplayNames()` returns the `bot_strategy.STRATEGY_NAMES` list (archetype labels). Wording in Setup can still note that heuristics are not full solver-grade bots.
 
 ### Timer / “Act” UI
 

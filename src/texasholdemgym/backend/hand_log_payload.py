@@ -1,4 +1,7 @@
-"""Assemble the dict passed to :meth:`~texasholdemgym.backend.hand_history.HandHistory.record_completed_hand`."""
+"""Build the JSON-like dict for :meth:`~texasholdemgym.backend.hand_history.HandHistory.record_completed_hand`.
+
+`AppDatabase.insert_hand_log` maps this into relational `hands` / `actions` / `players` rows.
+"""
 
 from __future__ import annotations
 
@@ -66,7 +69,7 @@ def build_hand_log_record(
         "buttonSeat": int(live.button_seat),
         "sbSeat": int(live.sb_seat),
         "bbSeat": int(live.bb_seat),
-        "sessionKey": 0,
+        "sessionKey": 0,  # single-table app; `player_key` in DB is derived as session_key*64+seat
         "actions": accounting.snapshot_actions(),
         "playersDetail": players_detail,
         "totalHandWonChips": int(sum(aw)),

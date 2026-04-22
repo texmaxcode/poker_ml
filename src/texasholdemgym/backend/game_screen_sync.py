@@ -20,6 +20,20 @@ try:
 except ImportError:  # pragma: no cover
     QQuickItem = None  # type: ignore[misc, assignment]
 
+# Indexed by `LiveHandState.street` (0..3); anything else falls back to the generic "Hand" label in sync.
+_STREET_PHASE_NAMES = ("Preflop", "Flop", "Turn", "River")
+
+
+def _pot_slice_amounts_for_qml(raw: list[Any]) -> list[int]:
+    """`pot_slices_for_hud` may return dicts or ints — QML needs a `QVariantList` of numbers."""
+    out: list[int] = []
+    for s in raw:
+        if isinstance(s, dict):
+            out.append(int(s.get("amount", 0)))
+        else:
+            out.append(int(s))
+    return out
+
 
 def sync_game_screen_properties(
     game: Any,
@@ -29,13 +43,12 @@ def sync_game_screen_properties(
     sync_depth: int,
 ) -> None:
     """Mirror engine state to QML `game_screen` properties (same keys as legacy C++ sync)."""
-    # Pot / slices (int amounts for QML)
+    # Pot and side-pot chips (QML `pot` + `potSlices` array)
     pot = int(game._hand_accounting.total_contrib_chips())
     set_root("pot", pot)
-    raw_slices = game._street.pot_slices_for_hud()
-    set_root("potSlices", [int(s.get("amount", 0)) if isinstance(s, dict) else int(s) for s in raw_slices])
+    set_root("potSlices", _pot_slice_amounts_for_qml(game._street.pot_slices_for_hud()))
 
-    # Seats
+    # All six seats: stacks, in-hand, this street, hole cards, positions
     set_root("seatStacks", game._table.stacks_list())
     set_root("seatInHand", [bool(x) for x in game._live.in_hand])
     set_root("seatStreetChips", game._hand_accounting.street_put_in_list())
@@ -66,7 +79,7 @@ def sync_game_screen_properties(
     set_root("bigBlind", int(game._table.big_blind))
     set_root("maxStreetContrib", int(game._hand_accounting.max_street_contrib()))
 
-    # Board
+    # Community cards (pad to five for fixed QML `board0`..`board4` bindings)
     b = [card_asset(c) for c in game._live.board] + [""] * 5
     set_root("board0", b[0])
     set_root("board1", b[1])
@@ -80,7 +93,7 @@ def sync_game_screen_properties(
     set_root("seatParticipating", game._table.participating_list())
     set_root("humanSittingOut", bool(game._human_sitting_out))
 
-    # Facing values for human HUD (raise/call/check affordances)
+    # Hero (seat 0) only: time bank, check/call/raise sizing, "open" vs "facing", BB option
     hs = int(game.HUMAN_HERO_SEAT)
     stack0 = int(game._player(hs).stack_on_table)
     human_bb_wait = bool(game._live.bb_preflop_waiting)
@@ -156,8 +169,8 @@ def sync_game_screen_properties(
     set_root("botDecisionDelaySec", int(game._bot_decision_delay_sec))
     if game._live.showdown:
         set_root("streetPhase", "Showdown")
-    elif 0 <= game._live.street < 4:
-        set_root("streetPhase", ("Preflop", "Flop", "Turn", "River")[game._live.street])
+    elif 0 <= game._live.street < len(_STREET_PHASE_NAMES):
+        set_root("streetPhase", _STREET_PHASE_NAMES[game._live.street])
     else:
         set_root("streetPhase", "Hand")
 

@@ -1,4 +1,9 @@
-"""NLHE hand engine: street flow, action, blind option, timers (``PokerGame`` is Qt + persistence)."""
+"""No-limit hold'em hand control: post blinds, act streets, all-in runouts, showdown, uncontested pot.
+
+Holds a reference to :class:`texasholdemgym.backend.poker_game.PokerGame` as ``_g`` and
+mutates its ``_table``, ``_live`` (and thus ``_street`` / ``_hand_accounting``). QML, SQLite,
+and timers stay on `PokerGame` — this class is the betting / card logic only.
+"""
 
 from __future__ import annotations
 
@@ -16,7 +21,13 @@ from texasholdemgym.backend.table_bot import BotDecision, BotDecisionKind, build
 
 
 class NlhHandEngine:
-    """Drives a single hand; mutates the bound PokerGame (Table, LiveHandState, Qt timers)."""
+    """NLHE hand loop: deal, act streets, run side pots, showdown, schedule the next hand.
+
+    Bound to a ``PokerGame`` as ``_g``; mutates ``_g._table``, ``_g._live``, ``_g._street`` / ``_g._hand_accounting``.
+    Rough call order: ``begin_new_hand`` → ``begin_betting_round`` / ``advance_street_or_showdown``;
+    per-seat ``fold``/``check``/``call``/``raise_to``; ``tick_decision`` / ``bot_act``; BB option helpers.
+    Access from Python tests via ``PokerGame._engine``.
+    """
 
     __slots__ = ("_g",)
 

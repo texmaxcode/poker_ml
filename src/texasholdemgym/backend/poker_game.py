@@ -1,3 +1,5 @@
+"""Bridges QML to the NLHE backend: `Table` + `LiveHandState` + `NlhHandEngine`, with SQLite for hand logs & KV state."""
+
 from __future__ import annotations
 
 import random
@@ -38,9 +40,24 @@ except ImportError:  # pragma: no cover
 
 
 class PokerGame(QtCore.QObject):
-    """QML + persistence shell: owns `Table`, `LiveHandState`, `HandAccounting`, and delegates NLHE play to `NlhHandEngine`."""
+    """Runtime shell for the table UI (QML) and hand lifecycle.
+
+    * **Model:** :class:`~texasholdemgym.backend.game_table.Table` (roster, chips, blinds) and
+      :class:`~texasholdemgym.backend.live_hand.LiveHandState` (current deal).
+    * **Play:** :class:`~texasholdemgym.backend.nlh_table_engine.NlhHandEngine` mutates the table; this class wires timers, QML sync, and `HandHistory` / SQLite KV.
+    """
 
     HUMAN_HERO_SEAT = int(Table.HERO_SEAT)
+    # QML `submitFacingAction(action, amount)` (see `GameScreen` / `submitFacingAction`).
+    _FACING_FOLD = 0
+    _FACING_CALL = 1
+    # action > 1 or raise with amount: treated as a raise-to (chips to add, or 0 = min-raise sizing).
+
+    # `GameScreen.buttonClicked` string ids (shared with `setRootObject` + tests).
+    _GAME_SCREEN_BTN_MORE_TIME = "MORE_TIME"
+    _GAME_SCREEN_BTN_FOLD = "FOLD"
+    _GAME_SCREEN_BTN_CALL = "CALL"
+    _GAME_SCREEN_BTN_CHECK = "CHECK"
 
     interactiveHumanChanged = QtCore.Signal()
     statsSeqChanged = QtCore.Signal()
@@ -53,31 +70,34 @@ class PokerGame(QtCore.QObject):
 
     def __init__(self, db: AppDatabase | None = None, hand_history: HandHistory | None = None) -> None:
         super().__init__()
+        # --- Persistence & optional hand log ---
         self._db = db
         self._hand_history = hand_history
-        # QML `game_screen` object (may be destroyed when navigating away).
+        # --- QML `GameScreen` root (null when the view is not shown; object may be destroyed) ---
         self._root_obj: QtCore.QObject | None = None
         self._rng = random.Random()
-
+        # --- Setup / display preferences (some persisted in KV) ---
         self._interactive_human = True
         self._bot_slow_actions = True
         self._winning_hand_show_ms = 2500
         self._bot_decision_delay_sec = 2
-
         self._stats_seq = 0
-
-        # Roster, stacks, bankrolls, and bot archetypes live on `Table`.
+        # --- Roster, stacks, bankrolls, bot tuning (`Table`) ---
         self._table = Table.default_six_max()
-
-        # Current deal: cards, board, positions, street (see `live_hand.LiveHandState`).
+        # --- Current hand: board, holes, button / blinds (`LiveHandState`) ---
         self._live = LiveHandState()
         self._decision_seconds_left = 0
+        # --- Timers: 1 Hz decision clock; delayed bot; auto next hand after showdown ---
         self._decision_timer = QtCore.QTimer(self)
         self._decision_timer.setInterval(1000)
-        # Parented single-shot timer is more reliable than `QTimer.singleShot` for bot actions.
         self._bot_timer = QtCore.QTimer(self)
         self._bot_timer.setSingleShot(True)
-
+        self._human_sitting_out = False
+        self._human_more_time_available = False
+        self._auto_hand_loop = True
+        self._next_hand_timer = QtCore.QTimer(self)
+        self._next_hand_timer.setSingleShot(True)
+        # --- Per-street pot / actions; drives `StreetBetController` ---
         self._hand_accounting = HandAccounting()
         self._street = StreetBetController(
             self._table,
@@ -87,18 +107,9 @@ class PokerGame(QtCore.QObject):
         )
         self._ranges = RangeManager()
         self._seat_bot = TableRulesBot()
-
-        # Per-seat opening-range editor (Setup): 3 layers × 13×13 weights + pasted text (`RangeManager`).
-        self._human_sitting_out = False
-        self._human_more_time_available = False
-        # Auto hand loop: deal next hand after showdown delay when idle.
-        self._auto_hand_loop = True
-        self._next_hand_timer = QtCore.QTimer(self)
-        self._next_hand_timer.setSingleShot(True)
-        # Session bankroll (charts + leaderboard) — in-memory, see `session_stats`.
+        # In-memory only: charts + leaderboard baselines.
         self._session_stats = BankrollSessionStats()
-
-        # `_sync_root` re-entrancy: avoid nested `processEvents` (would run the whole bot hand in one pump).
+        # Re-entrancy guard for `sync_game_screen_properties` (avoid nested event-loop pumps).
         self._sync_root_depth: int = 0
         self._hand_evaluator = StandardHandEvaluator()
 
@@ -112,6 +123,12 @@ class PokerGame(QtCore.QObject):
 
     def _player(self, seat: int) -> Player:
         return self._table.players[int(seat) % 6]
+
+    def _emit_stats_seq_and_session(self) -> None:
+        """Increment `statsSeq` and emit `sessionStatsChanged` (bankroll / setup charts in QML)."""
+        self._stats_seq += 1
+        self.statsSeqChanged.emit()
+        self.sessionStatsChanged.emit()
 
     def _refresh_session_stats_baseline(self) -> None:
         self._session_stats.refresh_baseline(self._table)
@@ -138,6 +155,29 @@ class PokerGame(QtCore.QObject):
             sig.disconnect(self._on_game_screen_button)  # type: ignore[attr-defined]
         except Exception:
             pass
+
+    def _unbind_from_game_screen(self, obj: QtCore.QObject | None) -> None:
+        """Remove signals from a `game_screen` `QObject` (button + destroyed). Safe if partially connected."""
+        if obj is None:
+            return
+        self._disconnect_game_screen_button(obj)
+        try:
+            obj.destroyed.disconnect(self._on_root_destroyed)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    def _connect_to_game_screen(self, obj: QtCore.QObject) -> None:
+        """Attach `destroyed` and `buttonClicked` on a new `GameScreen` instance."""
+        try:
+            obj.destroyed.connect(self._on_root_destroyed)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        sig = getattr(obj, "buttonClicked", None)
+        if sig is not None:
+            try:
+                sig.connect(self._on_game_screen_button)  # type: ignore[attr-defined]
+            except Exception:
+                pass
 
     def _new_shuffled_deck(self) -> list[tuple[int, int]]:
         return new_shuffled_deck(self._rng)
@@ -195,6 +235,11 @@ class PokerGame(QtCore.QObject):
     def _maybe_begin_hand_after_setup_change(self) -> None:
         self._engine.maybe_begin_hand_after_setup_change()
 
+    def _deferred_begin_new_hand_if_enough_seated(self) -> None:
+        """If idle and ≥2 players can be dealt in, `beginNewHand` on the next event-loop tick (avoids re-entrancy)."""
+        if not self._live.in_progress and self._count_eligible_for_deal() >= 2:
+            QtCore.QTimer.singleShot(0, self._maybe_begin_hand_after_setup_change)
+
     def _effective_seat_buy_in_chips(self, seat: int) -> int:
         return self._engine.effective_seat_buy_in_chips(seat)
 
@@ -238,7 +283,8 @@ class PokerGame(QtCore.QObject):
             human_sitting_out=bool(self._human_sitting_out),
         )
 
-    # --- Engine core (see `NlhHandEngine`) ---
+    # --- `NlhHandEngine` (single source of street / betting / showdown logic) ---
+    # The methods below are thin forwards so tests, timers, and this class can call a stable name.
     def _betting_round_fully_resolved(self) -> bool:
         """True when this street's betting is complete (including a full check-down). Kept for tests / harness."""
         return self._engine.betting_round_fully_resolved()
@@ -258,6 +304,7 @@ class PokerGame(QtCore.QObject):
         winning_hand_name: str = "",
     ) -> None:
         if self._hand_history is None:
+            # No relational log; still persist table + flags so a later launch sees stacks & setup.
             self._save_game_state_kv()
             return
         ended = int(time.time() * 1000)
@@ -326,7 +373,8 @@ class PokerGame(QtCore.QObject):
     def _auto_action_timeout(self) -> None:
         self._engine.auto_action_timeout()
 
-    # Properties used by QML bindings / Connections
+    # --- QML: `QtCore.Property` (exposed to bindings) ---
+
     @QtCore.Property(bool, notify=interactiveHumanChanged)
     def interactiveHuman(self) -> bool:
         return bool(self._interactive_human)
@@ -351,19 +399,13 @@ class PokerGame(QtCore.QObject):
     def rangeRevision(self) -> int:
         return int(self._ranges.revision)
 
-    # Methods used by QML
-    # `object` breaks QML→Python: GameScreen is a QObject, not a PyObjectWrapper. Use QObject.
+    # --- QML: public `Slot`s (use `QObject` for the game screen; `object` is not supported from QML) ---
+
     @QtCore.Slot(QtCore.QObject)
     def setRootObject(self, obj: QtCore.QObject | None) -> None:
-        # Bind to the QML `game_screen` item; clear safely when QML destroys it.
+        """Bind to the QML `game_screen` item, or `None` when the view is torn down."""
         if obj is None:
-            prev = self._root_obj
-            if prev is not None:
-                self._disconnect_game_screen_button(prev)
-                try:
-                    prev.destroyed.disconnect(self._on_root_destroyed)  # type: ignore[attr-defined]
-                except Exception:
-                    pass
+            self._unbind_from_game_screen(self._root_obj)
             self._root_obj = None
             return
 
@@ -372,49 +414,35 @@ class PokerGame(QtCore.QObject):
             self._sync_root()
             return
         if prev is not None:
-            self._disconnect_game_screen_button(prev)
-            try:
-                prev.destroyed.disconnect(self._on_root_destroyed)  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            self._unbind_from_game_screen(prev)
 
         self._root_obj = obj
-        try:
-            obj.destroyed.connect(self._on_root_destroyed)  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        sig = getattr(obj, "buttonClicked", None)
-        if sig is not None:
-            try:
-                sig.connect(self._on_game_screen_button)  # type: ignore[attr-defined]
-            except Exception:
-                pass
-        # Critical when a hand started before QML bound: without this sync, `beginNewHand` may no-op
-        # (`_in_progress` + root) and the HUD never receives engine state.
+        self._connect_to_game_screen(obj)
+        # If a hand already started, push engine state to QML; otherwise `beginNewHand` can no-op
+        # while `_live.in_progress` and root is missing.
         self._sync_root()
 
     @QtCore.Slot(str)
     def _on_game_screen_button(self, button: str) -> None:
         """QML `GameScreen.buttonClicked` — same routing as the app shell used to do in `app.py`."""
         b = str(button)
-        if b == "MORE_TIME":
+        if b == self._GAME_SCREEN_BTN_MORE_TIME:
             self.requestMoreTime()
             return
-        if b == "FOLD":
-            self.submitFacingAction(0, 0)
-        elif b == "CALL":
-            self.submitFacingAction(1, 0)
-        elif b == "CHECK":
+        if b == self._GAME_SCREEN_BTN_FOLD:
+            self.submitFacingAction(self._FACING_FOLD, 0)
+        elif b == self._GAME_SCREEN_BTN_CALL:
+            self.submitFacingAction(self._FACING_CALL, 0)
+        elif b == self._GAME_SCREEN_BTN_CHECK:
             self.submitCheckOrBet(True, 0)
 
     @QtCore.Slot()
     def beginNewHand(self) -> None:
         self._engine.begin_new_hand()
 
-    # --- Range editor: `RangeManager` in memory; `_persist_ranges` writes the KV bundle ---
     @staticmethod
     def _hole_to_grid_row_col(h0: tuple[int, int], h1: tuple[int, int]) -> tuple[int, int]:
-        """Delegate to `poker_core.hole_grid` (kept on `PokerGame` for tests / call sites)."""
+        """Map two hole cards to 13×13 range-grid indices; see `poker_core.hole_grid` (tests / editor)."""
         return hole_to_range_grid_row_col(h0, h1)
 
     def _save_game_state_kv(self) -> None:
@@ -425,6 +453,8 @@ class PokerGame(QtCore.QObject):
     def _persist_ranges(self) -> None:
         if self._db is not None:
             self._ranges.save_persisted(self._db)
+
+    # --- Setup / SQLite: table client state + per-seat range bundle (see `game_state_persist`) ---
 
     @QtCore.Slot()
     def loadPersistedSettings(self) -> None:
@@ -438,9 +468,7 @@ class PokerGame(QtCore.QObject):
         self._bootstrap_playable_table()
         self._refresh_session_stats_baseline()
         self.rangeRevisionChanged.emit()
-        self._stats_seq += 1
-        self.statsSeqChanged.emit()
-        self.sessionStatsChanged.emit()
+        self._emit_stats_seq_and_session()
 
     @QtCore.Slot()
     def savePersistedSettings(self) -> None:
@@ -478,13 +506,10 @@ class PokerGame(QtCore.QObject):
         for s in range(6):
             self._player(s).reconcile_stack_with_table_cap(cap)
 
-        self._stats_seq += 1
-        self.statsSeqChanged.emit()
-        self.sessionStatsChanged.emit()
+        self._emit_stats_seq_and_session()
         self._save_game_state_kv()
         self._sync_root()
-        if not self._live.in_progress and self._count_eligible_for_deal() >= 2:
-            QtCore.QTimer.singleShot(0, self._maybe_begin_hand_after_setup_change)
+        self._deferred_begin_new_hand_if_enough_seated()
 
     @QtCore.Slot(int, str, int, result=bool)
     def applySeatRangeText(self, seat: int, text: str, layer: int) -> bool:
@@ -519,6 +544,7 @@ class PokerGame(QtCore.QObject):
 
     @QtCore.Slot()
     def factoryResetToDefaultsAndClearHistory(self) -> None:
+        """Wipe hand DB, KV, ranges, and table state to a fresh install (QML `Factory reset`)."""
         if self._hand_history is not None:
             self._hand_history.clearAll()
         if self._db is not None:
@@ -541,11 +567,11 @@ class PokerGame(QtCore.QObject):
         self.botSlowActionsChanged.emit()
         self.winningHandShowMsChanged.emit()
         self.botDecisionDelaySecChanged.emit()
-        self._stats_seq += 1
-        self.statsSeqChanged.emit()
-        self.sessionStatsChanged.emit()
+        self._emit_stats_seq_and_session()
         self._hand_accounting.clear_for_new_hand()
         self._sync_root()
+
+    # --- Blinds / caps (Setup screen) ---
 
     @QtCore.Slot(result=int)
     def configuredSmallBlind(self) -> int:
@@ -599,8 +625,8 @@ class PokerGame(QtCore.QObject):
         prev = bool(self._player(seat).participating)
         self._player(seat).participating = bool(on)
         self._save_game_state_kv()
-        if on and not prev and not self._live.in_progress and self._count_eligible_for_deal() >= 2:
-            QtCore.QTimer.singleShot(0, self._maybe_begin_hand_after_setup_change)
+        if on and not prev:
+            self._deferred_begin_new_hand_if_enough_seated()
         self._sync_root()
 
     @QtCore.Slot(int)
@@ -660,9 +686,7 @@ class PokerGame(QtCore.QObject):
             total = max(0, int(v))
             on_table = max(0, int(self._player(seat).stack_on_table))
             self._player(seat).bankroll_off_table = max(0, total - on_table)
-            self._stats_seq += 1
-            self.statsSeqChanged.emit()
-            self.sessionStatsChanged.emit()
+            self._emit_stats_seq_and_session()
             self._save_game_state_kv()
 
     @QtCore.Slot(int, result=int)
@@ -675,9 +699,7 @@ class PokerGame(QtCore.QObject):
         seat = int(seat)
         if 0 <= seat < 6:
             self._player(seat).set_stack_with_total_preservation(int(v), cap=int(self._table.buy_in_cap_chips()))
-            self._stats_seq += 1
-            self.statsSeqChanged.emit()
-            self.sessionStatsChanged.emit()
+            self._emit_stats_seq_and_session()
             self._save_game_state_kv()
             self._sync_root()
 
@@ -750,7 +772,8 @@ class PokerGame(QtCore.QObject):
         self._persist_ranges()
         self.rangeRevisionChanged.emit()
 
-    # Stats
+    # --- In-memory session stats (bankroll / stacks over time; not in SQLite) ---
+
     @QtCore.Slot(result="QVariantList")
     def seatRankings(self):
         return self._session_stats.seat_ranking_rows(self._table)
@@ -781,9 +804,9 @@ class PokerGame(QtCore.QObject):
     def resetBankrollSession(self) -> None:
         self._session_stats.reset()
         self._refresh_session_stats_baseline()
-        self._stats_seq += 1
-        self.statsSeqChanged.emit()
-        self.sessionStatsChanged.emit()
+        self._emit_stats_seq_and_session()
+
+    # --- Hero: facing bet, donk, BB option (slots call into `NlhHandEngine` above) ---
 
     @QtCore.Slot(int)
     def submitBbPreflopRaise(self, amount: int) -> None:
@@ -793,16 +816,17 @@ class PokerGame(QtCore.QObject):
 
     @QtCore.Slot(int, int)
     def submitFacingAction(self, action: int, amount: int) -> None:
+        """Hero in-position: ``action`` is ``_FACING_FOLD`` / ``_FACING_CALL`` / else raise (``amount`` = extra chips, 0 = min-raise)."""
         if self._live.bb_preflop_waiting:
             return
         hs = int(self.HUMAN_HERO_SEAT)
         if self._live.acting_seat != hs:
             return
         act = int(action)
-        if act == 0:
+        if act == self._FACING_FOLD:
             self._human_more_time_available = False
             self._fold(hs)
-        elif act == 1:
+        elif act == self._FACING_CALL:
             self._human_more_time_available = False
             self._call(hs)
         else:
@@ -819,6 +843,7 @@ class PokerGame(QtCore.QObject):
 
     @QtCore.Slot(bool, int)
     def submitCheckOrBet(self, check: bool, amount: int) -> None:
+        """``check=True`` → check (or call if there is a bet to match); ``check=False`` → open/raise (amount = chip size from UI)."""
         if self._live.bb_preflop_waiting:
             if bool(check):
                 self._finish_bb_preflop_check()
@@ -840,15 +865,11 @@ class PokerGame(QtCore.QObject):
             self._advance_after_action()
             return
         need = self._hand_accounting.chips_needed_to_call(hs)
+        self._human_more_time_available = False
         if need > 0:
-            self._human_more_time_available = False
             self._call(hs)
         else:
-            self._human_more_time_available = False
-            if int(amount) <= 0:
-                self._check(hs)
-            else:
-                self._check(hs)
+            self._check(hs)
 
     @QtCore.Slot(bool)
     def setHumanSitOut(self, on: bool) -> None:
@@ -861,11 +882,13 @@ class PokerGame(QtCore.QObject):
                 hs = int(self.HUMAN_HERO_SEAT)
                 need = self._hand_accounting.chips_needed_to_call(hs)
                 if need > 0:
-                    self.submitFacingAction(0, 0)
+                    self.submitFacingAction(self._FACING_FOLD, 0)
                 else:
+                    # Facing no bet: the UI still routes "fold" here — force a fold to leave the hand.
                     self.submitFoldFromCheck()
-        elif prev and not self._live.in_progress and self._count_eligible_for_deal() >= 2:
-            QtCore.QTimer.singleShot(0, self._maybe_begin_hand_after_setup_change)
+        elif prev:
+            # Just sat back in: maybe start a new hand on the next tick.
+            self._deferred_begin_new_hand_if_enough_seated()
         self._save_game_state_kv()
         self._sync_root()
 
@@ -906,8 +929,6 @@ class PokerGame(QtCore.QObject):
         if add <= 0:
             return
         self._player(seat).transfer_from_bankroll_to_table(add)
-        self._stats_seq += 1
-        self.statsSeqChanged.emit()
-        self.sessionStatsChanged.emit()
+        self._emit_stats_seq_and_session()
         self._save_game_state_kv()
         self._sync_root()
