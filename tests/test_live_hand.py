@@ -21,3 +21,24 @@ def test_reset_for_new_deal_clears_showdown_flags() -> None:
     assert h.showdown is False
     assert h.showdown_status_text == ""
     assert h.bb_preflop_waiting is False
+
+
+def test_clear_showdown_banner_only_clears_banner_fields() -> None:
+    h = LiveHandState()
+    h.showdown = True
+    h.showdown_status_text = "x"
+    h.in_progress = True
+    h.clear_showdown_banner()
+    assert h.showdown is False
+    assert h.showdown_status_text == ""
+    assert h.in_progress is True
+
+
+def test_init_street_acted_marks_all_in_seats() -> None:
+    h = LiveHandState()
+    part = [True] * 6
+    inn = [True] * 6
+    stacks = [100, 0, 100, 100, 100, 100]
+    h.init_street_acted(part, inn, stacks)
+    assert h.street_acted[1] is True
+    assert h.street_acted[0] is False

@@ -1,18 +1,18 @@
-"""Short human-readable lines for winners (HUD / hand history)."""
+"""Short human-readable lines for winners (HUD / hand history).
+
+Implemented in :mod:`texasholdemgym.backend.table_hud_text` and exposed on :class:`texasholdemgym.backend.game_table.Table`.
+"""
 
 from __future__ import annotations
 
+from texasholdemgym.backend.table_hud_text import TableMessages
+
 # Match `BotNames.qml` default labels (seat 0 = hero).
-DEFAULT_SEAT_BOT_NAMES = ("Peter", "James", "John", "Andrew", "Philip")
+DEFAULT_SEAT_BOT_NAMES = TableMessages.DEFAULT_BOT_NAMES
 
 
 def seat_display_name(seat: int, bot_names: tuple[str, ...] = DEFAULT_SEAT_BOT_NAMES) -> str:
-    s = int(seat)
-    if s == 0:
-        return "You"
-    if 1 <= s <= 5:
-        return str(bot_names[s - 1])
-    return f"Seat {s}"
+    return TableMessages.seat_display_name(seat, bot_names)
 
 
 def format_showdown_line(
@@ -21,11 +21,4 @@ def format_showdown_line(
     *,
     bot_names: tuple[str, ...] = DEFAULT_SEAT_BOT_NAMES,
 ) -> str:
-    seats = [int(s) for s in winner_seats if int(s) >= 0]
-    if not seats:
-        return "Showdown"
-    names = [seat_display_name(s, bot_names) for s in seats]
-    label = str(hand_label).strip() or "Showdown"
-    if len(names) == 1:
-        return f"{names[0]} wins — {label}"
-    return f"{', '.join(names)} chop — {label}"
+    return TableMessages.format_showdown_line(winner_seats, hand_label, bot_names=bot_names)

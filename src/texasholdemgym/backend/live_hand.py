@@ -50,6 +50,13 @@ class LiveHandState:
     def reset_street_acted(self) -> None:
         self.street_acted = [False] * 6
 
+    def init_street_acted(self, participating: list[bool], in_hand: list[bool], stacks: list[int]) -> None:
+        """Start-of-street flags: clear, then mark all-in seats (0 stack) as done for this round."""
+        self.reset_street_acted()
+        for s in range(min(6, len(participating), len(in_hand), len(stacks))):
+            if participating[s] and in_hand[s] and int(stacks[s]) <= 0:
+                self.street_acted[s] = True
+
     def reset_for_new_deal(self) -> None:
         """Clear last hand's showdown line and BB-wait UI flags before dealing."""
         self.clear_showdown_banner()

@@ -7,32 +7,21 @@ from typing import Any
 from PySide6 import QtCore
 
 from texasholdemgym.backend import bot_strategy
-from texasholdemgym.backend.game_table import Player, StrategyTuning, Table
+from texasholdemgym.backend.game_screen_sync import sync_game_screen_properties
+from texasholdemgym.backend.game_table import DealPositions, Player, StrategyTuning, Table
 from texasholdemgym.backend.hand_accounting import HandAccounting
 from texasholdemgym.backend.live_hand import LiveHandState
+from texasholdemgym.backend.range_manager import RangeManager
+from texasholdemgym.backend.street_bet_controller import StreetBetController
+from texasholdemgym.backend.table_bot import BotDecision, BotDecisionKind, SeatBotObservation, TableRulesBot
 from texasholdemgym.backend import range_notation
 from texasholdemgym.backend.hand_history import HandHistory
 from texasholdemgym.backend.poker_core.board_deal import deal_next_community_street, run_out_board_to_river
-from texasholdemgym.backend.poker_core.blind_positions import (
-    advance_button_seat,
-    blind_seats_for_hand,
-    first_postflop_actor,
-    first_preflop_actor,
-)
-from texasholdemgym.backend.poker_core.betting_navigation import (
-    all_called_or_folded,
-    next_live_stack_seat,
-    next_seat_clockwise,
-    remaining_players,
-)
+from texasholdemgym.backend.poker_core.blind_positions import first_postflop_actor, first_preflop_actor
+from texasholdemgym.backend.poker_core.betting_navigation import all_called_or_folded, remaining_players
 from texasholdemgym.backend.poker_core.cards import card_asset, new_shuffled_deck, pretty_card
 from texasholdemgym.backend.poker_core.hole_grid import hole_to_range_grid_row_col
 from texasholdemgym.backend.poker_core.raise_rules import min_raise_increment_chips
-from texasholdemgym.backend.poker_core.showdown_text import (
-    DEFAULT_SEAT_BOT_NAMES,
-    format_showdown_line,
-    seat_display_name,
-)
 from texasholdemgym.backend.poker_core.hand_evaluation import (
     StandardHandEvaluator,
     best_rank_7,
@@ -40,12 +29,6 @@ from texasholdemgym.backend.poker_core.hand_evaluation import (
     rank_tuple_to_strength_01,
 )
 from texasholdemgym.backend.poker_core.pot import compute_pot_slices, distribute_showdown_side_pots
-from texasholdemgym.backend.poker_core.table_roster import (
-    bootstrap_playable_table as _bootstrap_playable_table_state,
-    count_eligible_for_deal,
-    dealing_mask_for_new_hand,
-    seat_eligible_for_new_hand,
-)
 from texasholdemgym.backend.sqlite_store import AppDatabase, _card_tuple_to_wire_int
 
 _GAME_STATE_KV = "poker_game_state_v1"
@@ -68,11 +51,9 @@ except ImportError:  # pragma: no cover
 
 
 class PokerGame(QtCore.QObject):
-    """Qt bridge: `Table` (session roster), `LiveHandState` (current deal), pot + timers."""
+    """Qt bridge: `Table`, `LiveHandState`, `HandAccounting`, `StreetBetController`, `RangeManager`, `TableRulesBot`."""
 
-    HUMAN_HERO_SEAT = 0
-    # Match `BotNames.qml` default labels (seat 0 = hero).
-    _SEAT_BOT_NAMES = DEFAULT_SEAT_BOT_NAMES
+    HUMAN_HERO_SEAT = int(Table.HERO_SEAT)
 
     interactiveHumanChanged = QtCore.Signal()
     statsSeqChanged = QtCore.Signal()
@@ -97,7 +78,6 @@ class PokerGame(QtCore.QObject):
         self._bot_decision_delay_sec = 2
 
         self._stats_seq = 0
-        self._range_revision = 0
 
         # Roster, stacks, bankrolls, and bot archetypes live on `Table`.
         self._table = Table.default_six_max()
@@ -114,10 +94,16 @@ class PokerGame(QtCore.QObject):
         self._bot_timer.timeout.connect(self._bot_act)
 
         self._hand_accounting = HandAccounting()
+        self._street = StreetBetController(
+            self._table,
+            self._live,
+            self._hand_accounting,
+            after_chips_sync=self._sync_root,
+        )
+        self._ranges = RangeManager()
+        self._seat_bot = TableRulesBot()
 
-        # Per-seat opening-range editor (Setup): 3 layers × 13×13 weights + pasted text.
-        self._range_text: dict[tuple[int, int], str] = {}
-        self._range_grid: dict[tuple[int, int], list[float]] = {}
+        # Per-seat opening-range editor (Setup): 3 layers × 13×13 weights + pasted text (`RangeManager`).
         self._human_sitting_out = False
         self._human_more_time_available = False
         # Auto hand loop: deal next hand after showdown delay when idle.
@@ -147,33 +133,19 @@ class PokerGame(QtCore.QObject):
         return self._table.players[int(seat) % 6]
 
     def _refresh_session_stats_baseline(self) -> None:
-        for i in range(6):
-            self._session_baseline_table[i] = int(self._player(i).stack_on_table)
-            self._session_baseline_total[i] = int(
-                self._player(i).bankroll_off_table + self._player(i).stack_on_table
-            )
-
-    def _apply_strategy_params(self, seat: int) -> None:
-        """Load `BotParams` defaults for the seat's archetype into `player.strategy.tuning`."""
-        if not (0 <= seat < 6):
-            return
-        idx = int(self._player(seat).strategy.archetype_index) % bot_strategy.STRATEGY_COUNT
-        bp = bot_strategy.params_for_index(idx)
-        bot_strategy.apply_bot_params_to_strategy_fields(self._player(seat).strategy.tuning, bp)
+        table0, total0 = self._table.session_baseline_snapshot()
+        self._session_baseline_table[:] = list(table0)
+        self._session_baseline_total[:] = list(total0)
 
     def _apply_strategy_ranges_from_preset(self, seat: int) -> None:
         """Load default preflop range text + grids for the seat's archetype (`STRATEGY_RANGE_PRESETS`)."""
         if not (0 <= seat < 6):
             return
-        idx = int(self._player(seat).strategy.archetype_index) % bot_strategy.STRATEGY_COUNT
-        call_t, raise_t, open_t = bot_strategy.range_presets_for_index(idx)
-        for layer, raw in enumerate((call_t, raise_t, open_t)):
-            g = range_notation.parse_range_to_grid(raw)
-            self._range_grid[(int(seat), layer)] = g
-            self._range_text[(int(seat), layer)] = range_notation.format_grid_to_range(g)
+        self._ranges.load_preset_for_archetype(seat, self._player(seat).strategy.archetype_index)
 
     def _apply_strategy_preset(self, seat: int) -> None:
-        self._apply_strategy_params(seat)
+        if 0 <= seat < 6:
+            self._player(seat).strategy.reload_params_from_archetype()
         self._apply_strategy_ranges_from_preset(seat)
 
     def _disconnect_game_screen_button(self, obj: QtCore.QObject | None) -> None:
@@ -239,31 +211,20 @@ class PokerGame(QtCore.QObject):
 
     def _count_eligible_for_deal(self) -> int:
         """Count seats eligible for the next deal (idle path; no pending wallet flush)."""
-        return count_eligible_for_deal(self._table.stacks_list(), self._human_sitting_out, self._table.participating_list())
+        return int(self._table.count_eligible_for_deal_roster(self._human_sitting_out))
 
     def _bootstrap_playable_table(self) -> None:
         """If persisted Setup/KV left fewer than two funded, participating seats, seed stacks like a fresh table.
 
         Without this, `beginNewHand` no-ops forever (no pot, no acting seat, HUD looks dead).
         """
-        sp, bi, hso, changed = _bootstrap_playable_table_state(
-            self._table.participating_list(),
-            self._table.stacks_list(),
-            self._human_sitting_out,
-            self._table.start_stack,
-        )
-        self._table.import_participating(sp)
-        self._table.import_stacks(bi)
+        hso, changed = self._table.bootstrap_if_insufficient_players(self._human_sitting_out)
         self._human_sitting_out = hso
         if changed:
             self._save_game_state_kv()
 
-    def _dealing_mask_for_new_hand(self) -> list[bool]:
-        """Who is dealt in this hand — in-hand mask before counting active players."""
-        return dealing_mask_for_new_hand(self._table.stacks_list(), self._human_sitting_out, self._table.participating_list())
-
     def _seat_eligible_for_new_hand(self, i: int) -> bool:
-        return seat_eligible_for_new_hand(i, self._table.stacks_list(), self._human_sitting_out, self._table.participating_list())
+        return self._table.seat_eligible_for_deal(int(i), self._human_sitting_out)
 
     def _schedule_next_hand_if_idle(self) -> None:
         """Schedule the next hand after `complete_hand_idle()` when the table is idle."""
@@ -289,16 +250,14 @@ class PokerGame(QtCore.QObject):
         self.beginNewHand()
 
     def _effective_seat_buy_in_chips(self, seat: int) -> int:
-        """Target on-table stack for a seat (effective buy-in chips)."""
-        seat = int(seat)
-        cap = int(max(0, self._table.max_on_table_bb * self._table.big_blind))
-        if not (0 <= seat < 6):
-            return int(self._table.start_stack)
-        if seat == self.HUMAN_HERO_SEAT and self._interactive_human:
-            return int(min(max(0, int(self._player(seat).stack_on_table)), cap)) if cap > 0 else int(self._player(seat).stack_on_table)
-        bb = max(1, int(self._table.big_blind))
-        mult = max(1, int(self._player(seat).strategy.tuning.buyInBb))
-        return int(max(1, min(mult * bb, cap))) if cap > 0 else max(1, mult * bb)
+        """Target on-table stack for a seat (delegates to ``Table``)."""
+        return int(
+            self._table.effective_buy_in_chips(
+                int(seat),
+                hero_seat=int(self.HUMAN_HERO_SEAT),
+                interactive_hero=bool(self._interactive_human),
+            )
+        )
 
     def _sync_root(self) -> None:
         if self._root() is None:
@@ -310,285 +269,55 @@ class PokerGame(QtCore.QObject):
             self._sync_root_depth -= 1
 
     def _sync_root_inner(self) -> None:
-        # Pot / slices (int amounts for QML)
-        pot = self._hand_accounting.total_contrib_chips()
-        self._set_root("pot", int(pot))
-        raw_slices = self._compute_pot_slices()
-        self._set_root("potSlices", [int(s.get("amount", 0)) if isinstance(s, dict) else int(s) for s in raw_slices])
-
-        # Seats
-        self._set_root("seatStacks", self._table.stacks_list())
-        self._set_root("seatInHand", [bool(x) for x in self._live.in_hand])
-        self._set_root("seatStreetChips", self._hand_accounting.street_put_in_list())
-        self._set_root("seatStreetActions", list(self._live.street_action_text))
-
-        c1 = [card_asset(h[0]) if self._live.in_hand[i] else "" for i, h in enumerate(self._live.holes)]
-        c2 = [card_asset(h[1]) if self._live.in_hand[i] else "" for i, h in enumerate(self._live.holes)]
-        self._set_root("seatC1", c1)
-        self._set_root("seatC2", c2)
-
-        self._set_root("buttonSeat", int(self._live.button_seat))
-        self._set_root("sbSeat", int(self._live.sb_seat))
-        self._set_root("bbSeat", int(self._live.bb_seat))
-        self._set_root("seatPositionLabels", [self.seatPositionLabel(i) for i in range(6)])
-        self._set_root("smallBlind", int(self._table.small_blind))
-        self._set_root("bigBlind", int(self._table.big_blind))
-        self._set_root("maxStreetContrib", int(self._max_street_contrib()))
-
-        # Board
-        b = [card_asset(c) for c in self._live.board] + [""] * 5
-        self._set_root("board0", b[0])
-        self._set_root("board1", b[1])
-        self._set_root("board2", b[2])
-        self._set_root("board3", b[3])
-        self._set_root("board4", b[4])
-
-        self._set_root("handSeq", int(self._live.hand_seq))
-        self._set_root("actingSeat", int(self._live.acting_seat))
-        self._set_root("showdown", bool(self._live.showdown))
-        self._set_root("seatParticipating", self._table.participating_list())
-        self._set_root("humanSittingOut", bool(self._human_sitting_out))
-
-        # Facing values for human HUD (raise/call/check affordances)
-        hs = int(self.HUMAN_HERO_SEAT)
-        stack0 = int(self._player(hs).stack_on_table)
-        human_bb_wait = bool(self._live.bb_preflop_waiting)
-        human_acting = (
-            self._live.acting_seat == hs
-            and self._interactive_human
-            and self._live.in_hand[hs]
-            and not self._human_sitting_out
+        sync_game_screen_properties(
+            self,
+            self._root(),
+            self._set_root,
+            sync_depth=int(self._sync_root_depth),
         )
-        human_facing = bool(
-            human_acting and not human_bb_wait and self._hand_accounting.to_call > self._hand_accounting.street_put_in_at(hs)
-        )
-        human_open_lane = bool(
-            human_acting and not human_bb_wait and self._hand_accounting.to_call <= self._hand_accounting.street_put_in_at(hs)
-        )
-
-        self._set_root(
-            "decisionSecondsLeft",
-            int(self._decision_seconds_left if (human_acting or human_bb_wait) else 0),
-        )
-        more_time = bool(
-            (human_facing or human_open_lane or human_bb_wait)
-            and self._human_more_time_available
-            and (human_acting or human_bb_wait)
-        )
-        self._set_root("humanMoreTimeAvailable", more_time)
-
-        self._set_root("humanBbPreflopOption", bool(human_bb_wait))
-        self._set_root("humanCanCheck", bool(human_open_lane and not human_bb_wait))
-
-        inc = min_raise_increment_chips(self._table.big_blind, self._hand_accounting.last_raise_increment)
-        need_raw = self._hand_accounting.chips_needed_to_call(hs) if human_facing else 0
-        need = min(need_raw, max(0, stack0)) if human_facing else 0
-        can_raise_facing = bool(
-            human_facing and inc > 0 and stack0 >= need + inc
-        )
-        self._set_root("humanCanRaiseFacing", can_raise_facing)
-        self._set_root("facingNeedChips", int(need))
-        self._set_root("facingMinRaiseChips", int(need + inc) if human_facing else 0)
-        self._set_root("facingMaxChips", int(stack0) if human_facing else 0)
-        self._set_root("facingPotAmount", int(pot))
-
-        if human_open_lane:
-            sb_open = int(self._table.street_bet)
-            min_open = sb_open if stack0 >= sb_open else max(1, stack0)
-            self._set_root("openRaiseMinChips", int(min_open))
-            self._set_root("openRaiseMaxChips", int(stack0))
-        else:
-            self._set_root("openRaiseMinChips", 0)
-            self._set_root("openRaiseMaxChips", 0)
-
-        if human_bb_wait:
-            bb_inc = min_raise_increment_chips(self._table.big_blind, self._hand_accounting.last_raise_increment)
-            self._set_root("bbPreflopMinChips", int(max(1, bb_inc)))
-            self._set_root("bbPreflopMaxChips", int(stack0))
-            bb_can_raise = bool(
-                bb_inc > 0
-                and stack0 >= bb_inc
-                and self._max_street_contrib() == self._hand_accounting.preflop_blind_level
-            )
-            self._set_root("humanBbCanRaise", bb_can_raise)
-        else:
-            self._set_root("bbPreflopMinChips", 0)
-            self._set_root("bbPreflopMaxChips", 0)
-            self._set_root("humanBbCanRaise", False)
-
-        self._set_root("humanStackChips", int(stack0))
-        self._set_root("humanHandText", self._human_hand_line_for_ui())
-        self._set_root("statusText", self._status_line())
-        self._set_root("interactiveHuman", bool(self._interactive_human))
-        self._set_root("botDecisionDelaySec", int(self._bot_decision_delay_sec))
-        # Match C++ `game_ui_sync.cpp` (`streetPhase` on the table root).
-        if self._live.showdown:
-            self._set_root("streetPhase", "Showdown")
-        elif 0 <= self._live.street < 4:
-            self._set_root(
-                "streetPhase",
-                ("Preflop", "Flop", "Turn", "River")[self._live.street],
-            )
-        else:
-            self._set_root("streetPhase", "Hand")
-
-        cap = int(max(0, self._table.max_on_table_bb * self._table.big_blind))
-        can_buy = bool(
-            not self._live.in_progress
-            and self._interactive_human
-            and stack0 <= 0
-            and cap > 0
-            and int(self._player(hs).bankroll_off_table) >= self._effective_seat_buy_in_chips(hs)
-        )
-        self._set_root("humanCanBuyBackIn", can_buy)
-        self._set_root("buyInChips", int(self._effective_seat_buy_in_chips(hs)))
-
-        self.pot_changed.emit()
-        self.sessionStatsChanged.emit()
-
-        # Nudge the scene graph — some stacks/layouts batch repaints until the next polish without this.
-        ri = self._root()
-        if ri is not None and QQuickItem is not None and isinstance(ri, QQuickItem):
-            try:
-                ri.update()
-                win = ri.window()
-                if win is not None:
-                    win.update()
-            except Exception:
-                pass
-
-        # Match C++ `game::flush_ui()` after `sync_ui`: bounded event pump so Quick repaints/layouts run
-        # without draining an entire zero-delay bot hand in one call (breaks tests and can recurse badly).
-        if self._sync_root_depth == 1:
-            app = QtCore.QCoreApplication.instance()
-            if app is not None:
-                app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 16)
-
-    def _seat_display_name(self, seat: int) -> str:
-        return seat_display_name(int(seat), self._SEAT_BOT_NAMES)
-
-    def _format_showdown_line(self, winner_seats: list[int], hand_label: str) -> str:
-        return format_showdown_line(winner_seats, hand_label, bot_names=self._SEAT_BOT_NAMES)
 
     def _status_line(self) -> str:
-        # Short line like upstream table HUD: street, pot, actor (no long em-dash phrases).
-        if self._live.showdown:
-            return self._live.showdown_status_text or "Showdown"
-        streets = ["Preflop", "Flop", "Turn", "River"]
-        st = streets[self._live.street] if 0 <= self._live.street < 4 else "Hand"
-        pot = int(self._hand_accounting.total_contrib_chips())
-        if self._live.acting_seat < 0 and not self._live.bb_preflop_waiting:
-            return f"{st} ${pot}"
-        hs = int(self.HUMAN_HERO_SEAT)
-        who = (
-            "You"
-            if (self._live.acting_seat == hs or self._live.bb_preflop_waiting) and self._interactive_human
-            else self._seat_display_name(self._live.acting_seat)
+        return Table.format_hud_status_line(
+            int(self._live.street),
+            int(self._hand_accounting.total_contrib_chips()),
+            int(self._live.acting_seat),
+            showdown=bool(self._live.showdown),
+            showdown_status_text=self._live.showdown_status_text,
+            bb_preflop_waiting=bool(self._live.bb_preflop_waiting),
+            interactive_human=bool(self._interactive_human),
+            hero_seat=int(self.HUMAN_HERO_SEAT),
+            bot_names=Table.DEFAULT_BOT_NAMES,
         )
-        return f"{st} ${pot} {who}"
 
     def _human_hand_line_for_ui(self) -> str:
         hs = int(self.HUMAN_HERO_SEAT)
-        # Show hero hole cards in the HUD whenever dealt in (including “Play as bot” autoplay).
-        if not self._live.in_hand[hs] or self._human_sitting_out:
-            return ""
         h0, h1 = self._live.holes[hs]
-        if h0[0] < 2 or h1[0] < 2:
-            return ""
-        return f"{pretty_card(h0)} {pretty_card(h1)}".strip()
+        return Table.format_hero_hole_hud_text(
+            h0,
+            h1,
+            hero_in_hand=bool(self._live.in_hand[hs]),
+            human_sitting_out=bool(self._human_sitting_out),
+        )
 
     def _compute_pot_slices(self):
         return compute_pot_slices(self._hand_accounting.contrib_totals_list(), self._live.in_hand)
 
     # --- Engine core ---
-    def _reset_street(self) -> None:
-        self._hand_accounting.reset_street(self._live.street, self._table.big_blind)
-        self._live.reset_street_labels()
-
     def _init_street_acted_for_new_round(self) -> None:
-        """Reset per-street voluntary-action flags; all-in seats cannot act further this street."""
-        self._live.reset_street_acted()
-        for s in range(6):
-            if self._table.participating_list()[s] and self._live.in_hand[s]:
-                if int(self._table.stacks_list()[s]) <= 0:
-                    self._live.street_acted[s] = True
+        self._live.init_street_acted(self._table.participating_list(), self._live.in_hand, self._table.stacks_list())
 
     def _mark_street_acted(self, seat: int) -> None:
-        s = int(seat)
-        if 0 <= s < 6:
-            self._live.street_acted[s] = True
-
-    def _all_voluntary_street_actions_complete(self) -> bool:
-        """For a check-down (to_call==0, no aggressor): every seat that can still act has acted."""
-        for s in range(6):
-            if not (self._table.participating_list()[s] and self._live.in_hand[s]):
-                continue
-            if int(self._table.stacks_list()[s]) <= 0:
-                continue
-            if not self._live.street_acted[s]:
-                return False
-        return True
+        self._street.mark_street_acted(seat)
 
     def _betting_round_fully_resolved(self) -> bool:
-        """True when this betting round is over (including full check-down on post-blind streets)."""
-        if not self._all_called_or_folded():
-            return False
-        if int(self._hand_accounting.to_call) > 0:
-            return True
-        if int(self._hand_accounting.last_raiser) >= 0:
-            return True
-        return self._all_voluntary_street_actions_complete()
-
-    def _post_blinds(self) -> None:
-        self._bet(self._live.sb_seat, self._table.small_blind, label="SB")
-        self._bet(self._live.bb_seat, self._table.big_blind, label="BB")
-        self._hand_accounting.set_after_blinds(self._live.sb_seat, self._live.bb_seat, self._table.big_blind)
-        self._live.bb_preflop_option_open = True
+        """True when this street's betting is complete (including a full check-down). Kept for tests / harness."""
+        return self._street.betting_round_complete()
 
     def _log_table_action(self, seat: int, kind_label: str, chips: int, *, is_blind: bool = False) -> None:
-        self._hand_accounting.append_action(int(self._live.street), int(seat), str(kind_label), int(chips), is_blind=is_blind)
+        self._street.log_street_action(seat, kind_label, chips, is_blind=is_blind)
 
     def _bet(self, seat: int, amount: int, label: str = "") -> None:
-        if not self._live.in_hand[seat]:
-            return
-        amt = max(0, min(int(amount), int(self._player(seat).stack_on_table)))
-        self._player(seat).stack_on_table -= amt
-        self._hand_accounting.add_street_and_contrib(seat, amt)
-        if label:
-            blind = label in ("SB", "BB")
-            # Seat HUD line (`seatStreetActions`): amounts for call / raise / blinds posted.
-            if amt > 0 and label in ("Call", "Raise", "SB", "BB"):
-                self._live.street_action_text[seat] = f"{label} ${int(amt)}"
-            else:
-                self._live.street_action_text[seat] = label
-            self._log_table_action(seat, label, int(amt), is_blind=blind)
-            if not blind:
-                self._mark_street_acted(seat)
-        # Pot / stacks must refresh as soon as chips move; `_advance_after_action` can branch without
-        # another sync until the next actor (or callers assumed UI updated elsewhere).
-        self._sync_root()
-
-    def _next_seat_clockwise(self, start: int, *, need_chips: bool) -> int:
-        """Next seat from `start` among participating players still in the hand.
-
-        `need_chips=True` skips all-in (0-stack) players so betting does not deadlock when nobody
-        can put more money in but `_all_called_or_folded` is still false (short all-ins).
-        """
-        return next_seat_clockwise(
-            start,
-            self._table.participating_list(),
-            self._live.in_hand,
-            self._table.stacks_list(),
-            need_chips=need_chips,
-        )
-
-    def _next_live_stack_seat(self, start: int) -> int:
-        """Next clockwise seat after `start` that will play this hand (participating + table chips).
-
-        Used for button / blind placement. Must not depend on `_in_hand`, which still reflects
-        the previous hand's folds until `beginNewHand` assigns a fresh dealing mask.
-        """
-        return next_live_stack_seat(start, self._table.participating_list(), self._table.stacks_list())
+        self._street.apply_contribution(seat, amount, label)
 
     def _begin_betting_round(self, first: int, *, fresh_street: bool = True) -> None:
         if first < 0:
@@ -603,19 +332,19 @@ class PokerGame(QtCore.QObject):
                     self._award_uncontested(alive[0] if alive else -1)
                     return
                 # Do **not** treat `_all_called_or_folded()` alone as "advance street" here: after
-                # `_reset_street()` a new board street has `to_call == 0` and zero `street_put_in`, so
-                # everyone trivially "matches" $0 — the function returns True and would chain-call
-                # `_advance_street_or_showdown()` (deal turn/river with no bets, stuck `acting_seat`).
-                # `_betting_round_fully_resolved` also requires a full check-down when there is no bet.
-                if self._betting_round_fully_resolved():
+                # After `_street.reset_street()` a new board street has `to_call == 0` and zero
+                # `street_put_in`, so everyone trivially "matches" $0 — the function returns True and would
+                # chain-call `_advance_street_or_showdown()` (deal turn/river with no bets, stuck `acting_seat`).
+                # `betting_round_complete` also requires a full check-down when there is no bet.
+                if self._street.betting_round_complete():
                     if self._maybe_handle_bb_preflop_option():
                         return
                     self._advance_street_or_showdown()
                     return
                 pivot = int(self._live.bb_seat) if int(self._live.street) == 0 else int(self._live.button_seat)
-                nxt = self._next_seat_clockwise(pivot, need_chips=True)
+                nxt = self._table.next_seat_clockwise_from(pivot, self._live.in_hand, need_chips=True)
                 if nxt < 0:
-                    nxt = self._next_seat_clockwise(pivot, need_chips=False)
+                    nxt = self._table.next_seat_clockwise_from(pivot, self._live.in_hand, need_chips=False)
                 if nxt >= 0:
                     self._live.acting_seat = nxt
                     self._decision_seconds_left = 20
@@ -745,12 +474,14 @@ class PokerGame(QtCore.QObject):
             return
         self._live.street = deal_next_community_street(self._live.street, self._live.board, self._live.deck)
 
-        self._reset_street()
+        self._street.reset_street()
         first = first_postflop_actor(
             self._live.button_seat,
             self._remaining_players(),
             self._table.stacks_list(),
-            lambda need_chips: self._next_seat_clockwise(self._live.button_seat, need_chips=need_chips),
+            lambda need_chips: self._table.next_seat_clockwise_from(
+                self._live.button_seat, self._live.in_hand, need_chips=need_chips
+            ),
             started_as_heads_up=bool(int(self._live.hand_num_dealt) == 2),
         )
         if first < 0 and len(self._remaining_players()) >= 2:
@@ -768,14 +499,16 @@ class PokerGame(QtCore.QObject):
         aw = [0] * 6
         if winner >= 0:
             aw[winner] = pot
-            self._player(winner).stack_on_table += pot
+            self._player(winner).receive_from_pot(pot)
         self._live.showdown = True
         self._live.acting_seat = -1
         self._decision_timer.stop()
         self._decision_seconds_left = 0
         win_list = [int(winner)] if winner >= 0 else []
         self._live.showdown_status_text = (
-            self._format_showdown_line(win_list, "Uncontested") if winner >= 0 else "Showdown"
+            Table.format_showdown_line(win_list, "Uncontested", bot_names=Table.DEFAULT_BOT_NAMES)
+            if winner >= 0
+            else "Showdown"
         )
         self._live.in_progress = False
         self._record_completed_hand(win_list, aw, winning_hand_name="Uncontested")
@@ -792,29 +525,53 @@ class PokerGame(QtCore.QObject):
             return 0.0
         return rank_tuple_to_strength_01(best_rank_7(cards7))
 
-    def _preflop_chart_weights(self, seat: int) -> tuple[float, float, float]:
-        """Layer 0/1/2 matrix weights at this hole card (call / raise / bet), each in [0,1]."""
-        h0, h1 = self._live.holes[seat]
-        row, col = hole_to_range_grid_row_col(h0, h1)
-        out: list[float] = []
-        for layer in range(3):
-            g = self._range_grid.get((int(seat), layer))
-            if g is None or len(g) != 13 * 13:
-                out.append(1.0)
-                continue
-            if max(g) <= 0:
-                out.append(1.0)
-                continue
-            w = float(g[row * 13 + col])
-            if w > 1.0:
-                w = min(1.0, w / 100.0)
-            out.append(max(0.0, min(1.0, w)))
-        return (out[0], out[1], out[2])
+    def _seat_bot_observation(self, seat: int, *, context: str) -> SeatBotObservation:
+        s = int(seat)
+        h0, h1 = self._live.holes[s]
+        cw = self._ranges.chart_weights_for_hole(s, h0, h1)
+        ppm = self._ranges.play_metric_for_hole(s, h0, h1)
+        if self._live.street == 0:
+            sig = float(ppm)
+            rw = float(cw[1])
+        else:
+            sig = float(self._hand_strength_01_seat(s))
+            rw = float(sig)
+        return SeatBotObservation(
+            context=str(context),
+            seat=s,
+            street=int(self._live.street),
+            stack=int(self._player(s).stack_on_table),
+            archetype_index=int(self._player(s).strategy.archetype_index),
+            tuning=self._player(s).strategy.tuning,
+            need_to_call=int(self._hand_accounting.chips_needed_to_call(s)),
+            to_call=int(self._hand_accounting.to_call),
+            street_put_in_at_seat=int(self._hand_accounting.street_put_in_at(s)),
+            min_raise_increment=int(
+                min_raise_increment_chips(self._table.big_blind, self._hand_accounting.last_raise_increment)
+            ),
+            preflop_blind_level=int(self._hand_accounting.preflop_blind_level),
+            big_blind=int(self._table.big_blind),
+            street_bet=int(self._table.street_bet),
+            max_street_contrib=int(self._max_street_contrib()),
+            signal_continue=float(sig),
+            weight_raise_gate=float(rw),
+            weight_bet_layer=float(cw[2]),
+            preflop_play_metric=float(ppm),
+        )
 
-    def _preflop_play_metric(self, seat: int) -> float:
-        """Upstream `play_weight_cards` — max weight across the three range layers."""
-        a, b, c = self._preflop_chart_weights(seat)
-        return max(a, b, c)
+    def _apply_bot_decision(self, seat: int, decision: BotDecision) -> None:
+        s = int(seat)
+        if decision.kind == BotDecisionKind.FOLD:
+            self._fold(s)
+        elif decision.kind == BotDecisionKind.CHECK:
+            self._check(s)
+        elif decision.kind == BotDecisionKind.CALL:
+            self._call(s)
+        elif decision.kind == BotDecisionKind.RAISE_TO_LEVEL:
+            self._raise_to(s, int(decision.raise_to_street_level))
+        else:
+            QtCore.qWarning("PokerGame: unexpected bot decision kind; checking.")
+            self._check(s)
 
     def _do_showdown(self) -> None:
         alive = self._remaining_players()
@@ -830,7 +587,7 @@ class PokerGame(QtCore.QObject):
         wh_name = rank_tuple_display_name(best)
         awards = self._distribute_showdown_side_pots()
         for s in range(6):
-            self._player(s).stack_on_table += awards[s]
+            self._player(s).receive_from_pot(awards[s])
         self._live.showdown = True
         self._live.acting_seat = -1
         self._decision_timer.stop()
@@ -838,7 +595,9 @@ class PokerGame(QtCore.QObject):
         win_disp = sorted([s for s in range(6) if awards[s] > 0])
         if not win_disp:
             win_disp = list(winners)
-        self._live.showdown_status_text = self._format_showdown_line(win_disp, wh_name)
+        self._live.showdown_status_text = Table.format_showdown_line(
+            win_disp, wh_name, bot_names=Table.DEFAULT_BOT_NAMES
+        )
         self._live.in_progress = False
         self._record_completed_hand(win_disp, awards, winning_hand_name=wh_name)
         self._sync_root()
@@ -902,9 +661,9 @@ class PokerGame(QtCore.QObject):
         s = self._live.acting_seat
         if s < 0 or not self._live.in_progress:
             return
-        nxt = self._next_seat_clockwise(s, need_chips=True)
+        nxt = self._table.next_seat_clockwise_from(s, self._live.in_hand, need_chips=True)
         if nxt < 0:
-            nxt = self._next_seat_clockwise(s, need_chips=False)
+            nxt = self._table.next_seat_clockwise_from(s, self._live.in_hand, need_chips=False)
         if nxt >= 0:
             self._live.acting_seat = nxt
             self._decision_seconds_left = 20
@@ -913,7 +672,7 @@ class PokerGame(QtCore.QObject):
             self._sync_root()
             self._maybe_schedule_bot()
             return
-        if self._betting_round_fully_resolved():
+        if self._street.betting_round_complete():
             if self._maybe_handle_bb_preflop_option():
                 return
             self._advance_street_or_showdown()
@@ -930,79 +689,9 @@ class PokerGame(QtCore.QObject):
             QtCore.qWarning("PokerGame: _bot_act with folded/out acting seat; recovering.")
             self._recover_stale_acting_seat()
             return
-
-        actor = self._player(s)
-        strat = actor.strategy
-        idx = int(strat.archetype_index) % bot_strategy.STRATEGY_COUNT
-        tuning = strat.tuning
-        stack = int(actor.stack_on_table)
-        need = self._hand_accounting.chips_needed_to_call(s)
-        inc = min_raise_increment_chips(self._table.big_blind, self._hand_accounting.last_raise_increment)
-        rng = self._rng
-
-        # AlwaysCall (test): never fold when calling is possible; never raise.
-        if idx == 0:
-            if need > 0:
-                self._call(s)
-            else:
-                self._check(s)
-            return
-
-        if self._live.street == 0:
-            pw = self._preflop_play_metric(s)
-            rw = self._preflop_chart_weights(s)[1]
-        else:
-            pw = self._hand_strength_01_seat(s)
-            rw = pw
-
-        if need > 0:
-            if self._live.street == 0:
-                if not bot_strategy.bot_preflop_continue_p(tuning, pw, rng):
-                    self._fold(s)
-                    return
-            else:
-                if not bot_strategy.bot_postflop_continue_p(tuning, pw, rng):
-                    self._fold(s)
-                    return
-            try_raise = bot_strategy.bot_wants_raise_after_continue_p(tuning, pw, rng)
-            new_level = int(self._hand_accounting.to_call + inc)
-            chips_needed = new_level - int(self._hand_accounting.street_put_in_at(s))
-            if try_raise and chips_needed > 0 and chips_needed <= stack:
-                gate = True
-                if self._live.street == 0:
-                    gate = bot_strategy.rng_passes_layer_gate(rw, pw, rng)
-                if gate:
-                    self._raise_to(s, new_level)
-                    return
-            self._call(s)
-            return
-
-        # need == 0: check or open-raise / limp logic
-        if self._live.street == 0:
-            if not bot_strategy.bot_preflop_continue_p(tuning, pw, rng):
-                self._check(s)
-                return
-            try_raise = bot_strategy.bot_wants_raise_after_continue_p(tuning, pw, rng)
-            if try_raise and inc > 0 and stack >= inc:
-                if bot_strategy.rng_passes_layer_gate(rw, pw, rng):
-                    self._raise_to(s, self._hand_accounting.to_call + self._table.big_blind)
-                    return
-            self._check(s)
-            return
-
-        if not bot_strategy.bot_wants_open_bet_postflop_p(tuning, pw, rng):
-            self._check(s)
-            return
-        _, _, bet_w = self._preflop_chart_weights(s)
-        play_triple = self._preflop_play_metric(s)
-        if not bot_strategy.rng_passes_layer_gate(bet_w, play_triple, rng):
-            self._check(s)
-            return
-        open_amt = min(int(self._table.street_bet), stack)
-        if open_amt <= 0:
-            self._check(s)
-            return
-        self._raise_to(s, int(self._hand_accounting.street_put_in_at(s)) + open_amt)
+        obs = self._seat_bot_observation(s, context="street")
+        decision = self._seat_bot.decide_street_action(obs, self._rng)
+        self._apply_bot_decision(s, decision)
 
     def _fold(self, seat: int) -> None:
         self._live.in_hand[seat] = False
@@ -1044,16 +733,16 @@ class PokerGame(QtCore.QObject):
         if len(alive) <= 1:
             self._award_uncontested(alive[0] if alive else -1)
             return
-        if self._betting_round_fully_resolved():
+        if self._street.betting_round_complete():
             if self._maybe_handle_bb_preflop_option():
                 return
             self._advance_street_or_showdown()
             return
-        nxt = self._next_seat_clockwise(self._live.acting_seat, need_chips=True)
+        nxt = self._table.next_seat_clockwise_from(self._live.acting_seat, self._live.in_hand, need_chips=True)
         if nxt < 0:
             if self._maybe_handle_bb_preflop_option():
                 return
-            if self._betting_round_fully_resolved():
+            if self._street.betting_round_complete():
                 self._advance_street_or_showdown()
             return
         self._live.acting_seat = nxt
@@ -1123,44 +812,26 @@ class PokerGame(QtCore.QObject):
         self._decision_seconds_left = 0
         self._human_more_time_available = False
         self._sync_root()
-        first = self._next_seat_clockwise(bb, need_chips=True)
+        first = self._table.next_seat_clockwise_from(bb, self._live.in_hand, need_chips=True)
         if first < 0:
-            first = self._next_seat_clockwise(bb, need_chips=False)
+            first = self._table.next_seat_clockwise_from(bb, self._live.in_hand, need_chips=False)
         self._begin_betting_round(first, fresh_street=False)
 
     def _bot_bb_preflop_option(self, bb: int) -> bool:
         if self._player(bb).stack_on_table <= 0:
             return False
-        inc = min_raise_increment_chips(self._table.big_blind, self._hand_accounting.last_raise_increment)
-        idx = int(self._player(bb).strategy.archetype_index) % bot_strategy.STRATEGY_COUNT
-        p = self._player(bb).strategy.tuning
-        pw = self._preflop_play_metric(bb)
-        rw = self._preflop_chart_weights(bb)[1]
-
+        obs = self._seat_bot_observation(int(bb), context="bb_preflop_option")
+        d = self._seat_bot.decide_bb_preflop_option(obs, self._rng)
         self._decision_timer.stop()
-
-        if idx == 0:
-            self._live.street_action_text[bb] = "Check"
-            self._log_table_action(bb, "Check", 0)
-            self._mark_street_acted(bb)
-            self._sync_root()
-            return False
-
-        raise_ok = bot_strategy.bot_bb_check_or_raise_p(p, pw, self._rng)
-        if (
-            raise_ok
-            and inc > 0
-            and self._player(bb).stack_on_table >= inc
-            and self._max_street_contrib() == self._hand_accounting.preflop_blind_level
-            and bot_strategy.rng_passes_layer_gate(rw, pw, self._rng)
-        ):
+        if d.kind == BotDecisionKind.BB_PREFLOP_RAISE:
+            inc = int(d.bb_raise_chips)
             self._bet(bb, inc, label="Raise")
             self._hand_accounting.last_raise_increment = int(inc)
             self._hand_accounting.bump_to_call_with_seat_street(bb)
             self._sync_root()
-            first = self._next_seat_clockwise(bb, need_chips=True)
+            first = self._table.next_seat_clockwise_from(bb, self._live.in_hand, need_chips=True)
             if first < 0:
-                first = self._next_seat_clockwise(bb, need_chips=False)
+                first = self._table.next_seat_clockwise_from(bb, self._live.in_hand, need_chips=False)
             self._begin_betting_round(first, fresh_street=False)
             return True
         self._live.street_action_text[bb] = "Check"
@@ -1192,7 +863,7 @@ class PokerGame(QtCore.QObject):
 
     @QtCore.Property(int, notify=rangeRevisionChanged)
     def rangeRevision(self) -> int:
-        return int(self._range_revision)
+        return int(self._ranges.revision)
 
     # Methods used by QML
     # `object` breaks QML→Python: GameScreen is a QObject, not a PyObjectWrapper. Use QObject.
@@ -1264,8 +935,9 @@ class PokerGame(QtCore.QObject):
         self._human_more_time_available = False
         # Who is eligible this hand (do not use `_in_hand` yet — it still holds last hand's folds).
         # Human excluded when sitting out; seats 1–5 respect Setup toggles only.
-        dealing = self._dealing_mask_for_new_hand()
-        n_live = int(sum(dealing))
+        dp = DealPositions.from_table(self._table, self._live.button_seat, self._human_sitting_out)
+        dealing = dp.dealing
+        n_live = dp.n_live
         self._live.hand_dealt_mask = [bool(dealing[i]) for i in range(6)]
         self._live.hand_num_dealt = int(n_live)
         if n_live < 2:
@@ -1286,12 +958,8 @@ class PokerGame(QtCore.QObject):
         self._live.in_progress = True
         self._live.street = 0
 
-        self._live.button_seat = advance_button_seat(
-            self._live.button_seat, dealing, self._table.participating_list(), self._table.stacks_list()
-        )
-        self._live.sb_seat, self._live.bb_seat = blind_seats_for_hand(
-            self._live.button_seat, n_live, self._table.participating_list(), self._table.stacks_list()
-        )
+        self._live.button_seat = dp.button_seat
+        self._live.sb_seat, self._live.bb_seat = dp.sb_seat, dp.bb_seat
 
         self._live.deck = self._new_shuffled_deck()
         self._live.board = []
@@ -1299,93 +967,35 @@ class PokerGame(QtCore.QObject):
 
         self._live.in_hand = dealing
         self._hand_accounting.clear_for_new_hand()
-        self._reset_street()
-        self._post_blinds()
+        self._street.reset_street()
+        self._street.post_blinds()
 
         first = first_preflop_actor(
             self._live.bb_seat,
             n_live,
             dealing,
-            lambda need_chips: self._next_seat_clockwise(self._live.bb_seat, need_chips=need_chips),
+            lambda need_chips: self._table.next_seat_clockwise_from(
+                self._live.bb_seat, self._live.in_hand, need_chips=need_chips
+            ),
         )
         self._begin_betting_round(first)
 
-    # --- Range editor (Setup) persistence (KV blob) ---
-    def _ensure_range_grid(self, seat: int, layer: int) -> list[float]:
-        k = (int(seat), int(layer))
-        if k not in self._range_grid:
-            # Default “play everything” until the user edits (matches an empty matrix being full range).
-            self._range_grid[k] = [1.0] * (13 * 13)
-        return self._range_grid[k]
-
+    # --- Range editor (Setup) persistence (KV blob) — see `RangeManager` ---
     @staticmethod
     def _hole_to_grid_row_col(h0: tuple[int, int], h1: tuple[int, int]) -> tuple[int, int]:
         """Delegate to `poker_core.hole_grid` (kept on `PokerGame` for tests / call sites)."""
         return hole_to_range_grid_row_col(h0, h1)
 
-    def _preflop_range_play_weight(self, seat: int) -> float:
-        """Layer 0 matrix weight at this hole card (legacy name; same as upstream call chart)."""
-        return self._preflop_chart_weights(seat)[0]
-
-    def _ranges_bundle(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"text": {}, "grid": {}}
-        for (seat, layer), txt in self._range_text.items():
-            out["text"].setdefault(str(seat), {})[str(layer)] = txt
-        for (seat, layer), gr in self._range_grid.items():
-            out["grid"].setdefault(str(seat), {})[str(layer)] = list(gr)
-        return out
-
-    def _apply_ranges_bundle(self, m: Any) -> None:
-        if not isinstance(m, dict):
-            return
-        self._range_text.clear()
-        self._range_grid.clear()
-        tx = m.get("text")
-        if isinstance(tx, dict):
-            for sk, layers in tx.items():
-                if not isinstance(layers, dict):
-                    continue
-                try:
-                    si = int(sk)
-                except Exception:
-                    continue
-                for lk, val in layers.items():
-                    try:
-                        li = int(lk)
-                    except Exception:
-                        continue
-                    self._range_text[(si, li)] = str(val) if val is not None else ""
-        gd = m.get("grid")
-        if isinstance(gd, dict):
-            for sk, layers in gd.items():
-                if not isinstance(layers, dict):
-                    continue
-                try:
-                    si = int(sk)
-                except Exception:
-                    continue
-                for lk, vals in layers.items():
-                    try:
-                        li = int(lk)
-                    except Exception:
-                        continue
-                    if isinstance(vals, list) and len(vals) == 13 * 13:
-                        self._range_grid[(si, li)] = [float(x) for x in vals]
-                    elif isinstance(vals, list):
-                        g = [0.0] * (13 * 13)
-                        for i, x in enumerate(vals[:169]):
-                            g[i] = float(x)
-                        self._range_grid[(si, li)] = g
-
     def _persist_ranges_kv(self) -> None:
         if self._db is None:
             return
-        self._db.kv_set_json(_RANGES_KV, self._ranges_bundle())
+        self._db.kv_set_json(_RANGES_KV, self._ranges.bundle())
 
     def _load_ranges_from_kv(self) -> None:
         if self._db is None:
             return
-        self._apply_ranges_bundle(self._db.kv_get_json(_RANGES_KV))
+        self._ranges.apply_bundle(self._db.kv_get_json(_RANGES_KV))
+        self._ranges.touch()
 
     def _game_state_dict(self) -> dict[str, Any]:
         return {
@@ -1468,10 +1078,10 @@ class PokerGame(QtCore.QObject):
                 )
         self._load_ranges_from_kv()
         for s in range(6):
-            self._apply_strategy_params(s)
+            if 0 <= s < 6:
+                self._player(s).strategy.reload_params_from_archetype()
         self._bootstrap_playable_table()
         self._refresh_session_stats_baseline()
-        self._range_revision += 1
         self.rangeRevisionChanged.emit()
         self._stats_seq += 1
         self.statsSeqChanged.emit()
@@ -1509,16 +1119,9 @@ class PokerGame(QtCore.QObject):
 
     @QtCore.Slot()
     def applySeatBuyInsToStacks(self) -> None:
-        cap = int(max(0, self._table.max_on_table_bb * self._table.big_blind))
+        cap = int(self._table.buy_in_cap_chips())
         for s in range(6):
-            if self._player(s).stack_on_table > cap:
-                overflow = int(self._player(s).stack_on_table - cap)
-                self._player(s).stack_on_table = cap
-                self._player(s).bankroll_off_table += overflow
-            if self._player(s).stack_on_table < 0:
-                deficit = -int(self._player(s).stack_on_table)
-                self._player(s).stack_on_table = 0
-                self._player(s).bankroll_off_table = max(0, int(self._player(s).bankroll_off_table) - deficit)
+            self._player(s).reconcile_stack_with_table_cap(cap)
 
         self._stats_seq += 1
         self.statsSeqChanged.emit()
@@ -1541,10 +1144,8 @@ class PokerGame(QtCore.QObject):
             g = range_notation.parse_range_to_grid(t)
         except ValueError:
             return False
-        self._range_grid[(seat, layer)] = g
-        self._range_text[(seat, layer)] = range_notation.format_grid_to_range(g)
+        self._ranges.apply_parsed_grid(seat, layer, g)
         self._persist_ranges_kv()
-        self._range_revision += 1
         self.rangeRevisionChanged.emit()
         return True
 
@@ -1554,8 +1155,7 @@ class PokerGame(QtCore.QObject):
         layer = int(layer)
         if not (0 <= seat < 6 and 0 <= layer < 3):
             return ""
-        g = self._ensure_range_grid(seat, layer)
-        return range_notation.format_grid_to_range(g)
+        return self._ranges.export_formatted_text(seat, layer)
 
     @QtCore.Slot(int, result=int)
     def seatStrategyIndex(self, seat: int) -> int:
@@ -1569,8 +1169,7 @@ class PokerGame(QtCore.QObject):
         if self._db is not None:
             self._db.kv_delete(_GAME_STATE_KV)
             self._db.kv_delete(_RANGES_KV)
-        self._range_text.clear()
-        self._range_grid.clear()
+        self._ranges.clear()
         self._table.reset_like_new_install()
         self._interactive_human = True
         self._human_sitting_out = False
@@ -1580,6 +1179,8 @@ class PokerGame(QtCore.QObject):
         self._live.button_seat = 0
         for s in range(6):
             self._apply_strategy_preset(s)
+        self._ranges.touch()
+        self.rangeRevisionChanged.emit()
         self._auto_hand_loop = True
         self._hand_accounting.begin_action_log(0)
         self.interactiveHumanChanged.emit()
@@ -1614,8 +1215,7 @@ class PokerGame(QtCore.QObject):
 
     @QtCore.Slot(result=int)
     def maxBuyInChips(self) -> int:
-        cap = int(max(0, self._table.max_on_table_bb * self._table.big_blind))
-        return cap if cap > 0 else int(self._table.start_stack)
+        return int(self._table.max_buy_in_chips())
 
     @QtCore.Slot(int, result=bool)
     def canBuyBackIn(self, seat: int) -> bool:
@@ -1627,8 +1227,8 @@ class PokerGame(QtCore.QObject):
             return False
         if self._player(hs).stack_on_table > 0:
             return False
-        cap = int(max(0, self._table.max_on_table_bb * self._table.big_blind))
-        need = self._effective_seat_buy_in_chips(hs)
+        cap = int(self._table.buy_in_cap_chips())
+        need = int(self._effective_seat_buy_in_chips(hs))
         return bool(cap > 0 and int(self._player(hs).bankroll_off_table) >= need)
 
     @QtCore.Slot(int, result=bool)
@@ -1720,13 +1320,7 @@ class PokerGame(QtCore.QObject):
     def setSeatBuyIn(self, seat: int, v: int) -> None:
         seat = int(seat)
         if 0 <= seat < 6:
-            want = max(0, int(v))
-            cap = int(max(0, self._table.max_on_table_bb * self._table.big_blind))
-            want = min(want, cap) if cap > 0 else want
-            total = int(self._player(seat).stack_on_table + self._player(seat).bankroll_off_table)
-            want = min(want, total)
-            self._player(seat).stack_on_table = want
-            self._player(seat).bankroll_off_table = max(0, total - want)
+            self._player(seat).set_stack_with_total_preservation(int(v), cap=int(self._table.buy_in_cap_chips()))
             self._stats_seq += 1
             self.statsSeqChanged.emit()
             self.sessionStatsChanged.emit()
@@ -1744,7 +1338,7 @@ class PokerGame(QtCore.QObject):
             self._save_game_state_kv()
             self._persist_ranges_kv()
             self._sync_root()
-            self._range_revision += 1
+            self._ranges.touch()
             self.rangeRevisionChanged.emit()
 
     @QtCore.Slot(int, result=str)
@@ -1753,42 +1347,14 @@ class PokerGame(QtCore.QObject):
 
     @QtCore.Slot(int, result=str)
     def seatPositionLabel(self, seat: int) -> str:
-        """BTN / SB / BB / UTG / HJ / CO for a seat — same rules as former QML `GameScreen.seatRole`."""
-        n = 6
-        seat = int(seat)
-        btn = int(self._live.button_seat)
-        sb = int(self._live.sb_seat)
-        bb = int(self._live.bb_seat)
-        part = self._table.participating_list()
-
-        def in_dealing_pool(idx: int) -> bool:
-            if idx < 0 or idx >= n:
-                return False
-            if idx < len(part) and part[idx] is False:
-                return False
-            return True
-
-        if bb < 0:
-            return "—"
-        if seat == btn:
-            return "BTN"
-        if sb >= 0 and seat == sb:
-            return "SB"
-        if bb >= 0 and seat == bb:
-            return "BB"
-        order: list[int] = []
-        for k in range(1, n):
-            s = (bb + k) % n
-            if s != btn and s != sb and s != bb and in_dealing_pool(s):
-                order.append(s)
-        m = len(order)
-        if m > 0 and seat == order[0]:
-            return "UTG"
-        if m >= 2 and seat == order[m - 1]:
-            return "CO"
-        if m >= 3 and seat == order[m - 2]:
-            return "HJ"
-        return "—"
+        """BTN / SB / BB / UTG / HJ / CO — delegates to ``Table.seat_position_label``."""
+        return Table.seat_position_label(
+            int(seat),
+            button_seat=int(self._live.button_seat),
+            sb_seat=int(self._live.sb_seat),
+            bb_seat=int(self._live.bb_seat),
+            participating=self._table.participating_list(),
+        )
 
     @QtCore.Slot(bool)
     def setInteractiveHuman(self, on: bool) -> None:
@@ -1806,12 +1372,8 @@ class PokerGame(QtCore.QObject):
         seat = int(seat)
         if not (0 <= seat < 6):
             return
-        full = [1.0] * (13 * 13)
-        for layer in range(3):
-            self._range_grid[(seat, layer)] = list(full)
-            self._range_text[(seat, layer)] = "*"
+        self._ranges.reset_seat_full_range(seat)
         self._persist_ranges_kv()
-        self._range_revision += 1
         self.rangeRevisionChanged.emit()
 
     @QtCore.Slot(int, int, result="QVariantList")
@@ -1820,7 +1382,7 @@ class PokerGame(QtCore.QObject):
         layer = int(layer)
         if not (0 <= seat < 6 and 0 <= layer < 3):
             return [0.0] * (13 * 13)
-        return list(self._ensure_range_grid(seat, layer))
+        return list(self._ranges.ensure_grid(seat, layer))
 
     @QtCore.Slot(int, int, int, float, int)
     def setRangeCell(self, seat: int, row: int, col: int, w: float, layer: int) -> None:
@@ -1830,11 +1392,8 @@ class PokerGame(QtCore.QObject):
         col = int(col)
         if not (0 <= seat < 6 and 0 <= layer < 3 and 0 <= row < 13 and 0 <= col < 13):
             return
-        g = self._ensure_range_grid(seat, layer)
-        g[row * 13 + col] = float(w)
-        self._range_text[(seat, layer)] = range_notation.format_grid_to_range(g)
+        self._ranges.set_cell_weight(seat, layer, row, col, w)
         self._persist_ranges_kv()
-        self._range_revision += 1
         self.rangeRevisionChanged.emit()
 
     # Stats
@@ -2015,12 +1574,12 @@ class PokerGame(QtCore.QObject):
             return
         if self._player(seat).bankroll_off_table <= 0:
             return
-        cap = int(max(0, self._table.max_on_table_bb * self._table.big_blind))
-        add = min(int(self._player(seat).bankroll_off_table), cap if cap > 0 else int(self._player(seat).bankroll_off_table))
+        cap = int(self._table.buy_in_cap_chips())
+        br = int(self._player(seat).bankroll_off_table)
+        add = min(br, cap if cap > 0 else br)
         if add <= 0:
             return
-        self._player(seat).stack_on_table += add
-        self._player(seat).bankroll_off_table -= add
+        self._player(seat).transfer_from_bankroll_to_table(add)
         self._stats_seq += 1
         self.statsSeqChanged.emit()
         self.sessionStatsChanged.emit()

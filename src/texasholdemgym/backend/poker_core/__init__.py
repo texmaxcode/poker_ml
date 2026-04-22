@@ -8,6 +8,8 @@ from texasholdemgym.backend.poker_core.blind_positions import (
 )
 from texasholdemgym.backend.poker_core.betting_navigation import (
     all_called_or_folded,
+    all_voluntary_street_actions_complete,
+    betting_round_fully_resolved,
     next_live_stack_seat,
     next_seat_clockwise,
     remaining_players,
@@ -47,6 +49,8 @@ __all__ = [
     "HandStrengthEvaluator",
     "StandardHandEvaluator",
     "all_called_or_folded",
+    "all_voluntary_street_actions_complete",
+    "betting_round_fully_resolved",
     "bootstrap_playable_table",
     "card_asset",
     "compute_pot_slices",
