@@ -7,11 +7,18 @@ interactions for one NLHE street.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 from texasholdemgym.backend.game_table import Player, Table
 from texasholdemgym.backend.hand_accounting import HandAccounting
 from texasholdemgym.backend.live_hand import LiveHandState
-from texasholdemgym.backend.poker_core.betting_navigation import betting_round_fully_resolved
+from texasholdemgym.backend.poker_core.betting_navigation import (
+    all_called_or_folded,
+    betting_round_fully_resolved,
+    remaining_players,
+)
+from texasholdemgym.backend.poker_core.pot import compute_pot_slices, distribute_showdown_side_pots
+from texasholdemgym.backend.poker_core.protocols import HandStrengthEvaluator
 
 
 class StreetBetController:
@@ -50,6 +57,34 @@ class StreetBetController:
                 int(self._accounting.last_raiser),
                 self._live.street_acted,
             )
+        )
+
+    def all_street_bets_matched(self) -> bool:
+        """No active seat (with chips) is behind the current ``to_call`` on this street."""
+        return all_called_or_folded(
+            self._table.participating_list(),
+            self._live.in_hand,
+            self._accounting.street_put_in_list(),
+            self._table.stacks_list(),
+            int(self._accounting.to_call),
+        )
+
+    def seats_still_in_hand(self) -> list[int]:
+        """Seats with ``participating and in_hand`` in button order (see :func:`remaining_players`)."""
+        return remaining_players(self._table.participating_list(), self._live.in_hand)
+
+    def pot_slices_for_hud(self) -> list[dict[str, Any]]:
+        """Contiguous contribution tiers (main + side-pots) for the HUD / QML `potSlices`."""
+        return compute_pot_slices(self._accounting.contrib_totals_list(), self._live.in_hand)
+
+    def distribute_showdown_payouts(self, evaluator: HandStrengthEvaluator) -> list[int]:
+        return distribute_showdown_side_pots(
+            self._accounting.contrib_totals_list(),
+            self._live.in_hand,
+            self.seats_still_in_hand(),
+            self._live.board,
+            self._live.holes,
+            evaluator,
         )
 
     def log_street_action(self, seat: int, kind_label: str, chips: int, *, is_blind: bool = False) -> None:

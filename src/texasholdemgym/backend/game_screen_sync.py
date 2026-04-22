@@ -32,7 +32,7 @@ def sync_game_screen_properties(
     # Pot / slices (int amounts for QML)
     pot = int(game._hand_accounting.total_contrib_chips())
     set_root("pot", pot)
-    raw_slices = game._compute_pot_slices()
+    raw_slices = game._street.pot_slices_for_hud()
     set_root("potSlices", [int(s.get("amount", 0)) if isinstance(s, dict) else int(s) for s in raw_slices])
 
     # Seats
@@ -64,7 +64,7 @@ def sync_game_screen_properties(
     )
     set_root("smallBlind", int(game._table.small_blind))
     set_root("bigBlind", int(game._table.big_blind))
-    set_root("maxStreetContrib", int(game._max_street_contrib()))
+    set_root("maxStreetContrib", int(game._hand_accounting.max_street_contrib()))
 
     # Board
     b = [card_asset(c) for c in game._live.board] + [""] * 5
@@ -141,7 +141,7 @@ def sync_game_screen_properties(
         bb_can_raise = bool(
             bb_inc > 0
             and stack0 >= bb_inc
-            and game._max_street_contrib() == game._hand_accounting.preflop_blind_level
+            and game._hand_accounting.max_street_contrib() == game._hand_accounting.preflop_blind_level
         )
         set_root("humanBbCanRaise", bb_can_raise)
     else:

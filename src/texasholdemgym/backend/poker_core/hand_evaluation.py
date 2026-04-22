@@ -75,6 +75,37 @@ def rank_tuple_display_name(rank: tuple) -> str:
     return "Hand"
 
 
+def hand_strength_01_hole_board(
+    h0: tuple[int, int],
+    h1: tuple[int, int],
+    board: list[tuple[int, int]],
+) -> float:
+    """0–1 strength for a seat: best 5 of hole cards + community (bot / HUD signals)."""
+    if h0[0] < 2 or h1[0] < 2:
+        return 0.0
+    cards7 = [h0, h1] + [c for c in board if c[0] >= 2]
+    if len(cards7) < 2:
+        return 0.0
+    return rank_tuple_to_strength_01(best_rank_7(cards7))
+
+
+def showdown_tied_winners(
+    alive_seats: list[int],
+    board: list[tuple[int, int]],
+    holes: list[list[tuple[int, int]]],
+) -> tuple[list[int], str]:
+    """Seats sharing the best 7-card hand and a display label (e.g. "Two pair")."""
+    if not alive_seats:
+        return [], ""
+    ranks: dict[int, tuple] = {}
+    for s in alive_seats:
+        cards7 = list(board) + list(holes[s])
+        ranks[s] = best_rank_7(cards7)
+    best = max(ranks.values())
+    winners = [s for s, r in ranks.items() if r == best]
+    return winners, rank_tuple_display_name(best)
+
+
 def rank_tuple_to_strength_01(rank: tuple) -> float:
     """Map `hand_rank_5` tuple to [0,1] like upstream `hand_eval::score_to_01`."""
     if not rank:

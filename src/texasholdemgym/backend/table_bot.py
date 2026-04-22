@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from enum import Enum, auto
 
 from texasholdemgym.backend import bot_strategy
-from texasholdemgym.backend.game_table import StrategyTuning
+from texasholdemgym.backend.game_table import Table, StrategyTuning
+from texasholdemgym.backend.hand_accounting import HandAccounting
+from texasholdemgym.backend.live_hand import LiveHandState
+from texasholdemgym.backend.poker_core.hand_evaluation import hand_strength_01_hole_board
+from texasholdemgym.backend.poker_core.raise_rules import min_raise_increment_chips
+from texasholdemgym.backend.range_manager import RangeManager
 
 
 class BotDecisionKind(Enum):
@@ -48,6 +54,50 @@ class SeatBotObservation:
     weight_raise_gate: float
     weight_bet_layer: float
     preflop_play_metric: float
+
+
+def build_seat_bot_observation(
+    context: str,
+    seat: int,
+    table: Table,
+    live: LiveHandState,
+    accounting: HandAccounting,
+    ranges: RangeManager,
+) -> SeatBotObservation:
+    """Fold hole cards + table/accounting into the snapshot ``TableRulesBot`` consumes."""
+    s = int(seat)
+    h0, h1 = live.holes[s]
+    cw = ranges.chart_weights_for_hole(s, h0, h1)
+    ppm = ranges.play_metric_for_hole(s, h0, h1)
+    if live.street == 0:
+        sig = float(ppm)
+        rw = float(cw[1])
+    else:
+        sig = float(hand_strength_01_hole_board(h0, h1, live.board))
+        rw = float(sig)
+    p = table.players[s]
+    return SeatBotObservation(
+        context=str(context),
+        seat=s,
+        street=int(live.street),
+        stack=int(p.stack_on_table),
+        archetype_index=int(p.strategy.archetype_index),
+        tuning=p.strategy.tuning,
+        need_to_call=int(accounting.chips_needed_to_call(s)),
+        to_call=int(accounting.to_call),
+        street_put_in_at_seat=int(accounting.street_put_in_at(s)),
+        min_raise_increment=int(
+            min_raise_increment_chips(table.big_blind, accounting.last_raise_increment)
+        ),
+        preflop_blind_level=int(accounting.preflop_blind_level),
+        big_blind=int(table.big_blind),
+        street_bet=int(table.street_bet),
+        max_street_contrib=int(accounting.max_street_contrib()),
+        signal_continue=float(sig),
+        weight_raise_gate=float(rw),
+        weight_bet_layer=float(cw[2]),
+        preflop_play_metric=float(ppm),
+    )
 
 
 class TableRulesBot:

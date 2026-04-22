@@ -32,7 +32,7 @@ def test_betting_round_not_resolved_on_check_down_until_all_have_acted() -> None
             g._live.street_acted,
         )
         for s in range(6):
-            g._mark_street_acted(s)
+            g._street.mark_street_acted(s)
         assert g._betting_round_fully_resolved()
     finally:
         g.deleteLater()

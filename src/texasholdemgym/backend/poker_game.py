@@ -13,23 +13,17 @@ from texasholdemgym.backend.hand_accounting import HandAccounting
 from texasholdemgym.backend.live_hand import LiveHandState
 from texasholdemgym.backend.range_manager import RangeManager
 from texasholdemgym.backend.street_bet_controller import StreetBetController
-from texasholdemgym.backend.table_bot import BotDecision, BotDecisionKind, SeatBotObservation, TableRulesBot
+from texasholdemgym.backend.table_bot import BotDecision, BotDecisionKind, TableRulesBot, build_seat_bot_observation
 from texasholdemgym.backend import range_notation
 from texasholdemgym.backend.hand_history import HandHistory
+from texasholdemgym.backend.hand_log_payload import build_hand_log_record
 from texasholdemgym.backend.poker_core.board_deal import deal_next_community_street, run_out_board_to_river
 from texasholdemgym.backend.poker_core.blind_positions import first_postflop_actor, first_preflop_actor
-from texasholdemgym.backend.poker_core.betting_navigation import all_called_or_folded, remaining_players
-from texasholdemgym.backend.poker_core.cards import card_asset, new_shuffled_deck, pretty_card
+from texasholdemgym.backend.poker_core.cards import new_shuffled_deck
 from texasholdemgym.backend.poker_core.hole_grid import hole_to_range_grid_row_col
 from texasholdemgym.backend.poker_core.raise_rules import min_raise_increment_chips
-from texasholdemgym.backend.poker_core.hand_evaluation import (
-    StandardHandEvaluator,
-    best_rank_7,
-    rank_tuple_display_name,
-    rank_tuple_to_strength_01,
-)
-from texasholdemgym.backend.poker_core.pot import compute_pot_slices, distribute_showdown_side_pots
-from texasholdemgym.backend.sqlite_store import AppDatabase, _card_tuple_to_wire_int
+from texasholdemgym.backend.poker_core.hand_evaluation import StandardHandEvaluator, showdown_tied_winners
+from texasholdemgym.backend.sqlite_store import AppDatabase
 
 _GAME_STATE_KV = "poker_game_state_v1"
 _RANGES_KV = "seat_ranges_v1"
@@ -206,9 +200,6 @@ class PokerGame(QtCore.QObject):
             if self._root_obj is not None and not self._qobject_alive(self._root_obj):
                 self._on_root_destroyed()
 
-    def _max_street_contrib(self) -> int:
-        return self._hand_accounting.max_street_contrib()
-
     def _count_eligible_for_deal(self) -> int:
         """Count seats eligible for the next deal (idle path; no pending wallet flush)."""
         return int(self._table.count_eligible_for_deal_roster(self._human_sitting_out))
@@ -299,25 +290,10 @@ class PokerGame(QtCore.QObject):
             human_sitting_out=bool(self._human_sitting_out),
         )
 
-    def _compute_pot_slices(self):
-        return compute_pot_slices(self._hand_accounting.contrib_totals_list(), self._live.in_hand)
-
     # --- Engine core ---
-    def _init_street_acted_for_new_round(self) -> None:
-        self._live.init_street_acted(self._table.participating_list(), self._live.in_hand, self._table.stacks_list())
-
-    def _mark_street_acted(self, seat: int) -> None:
-        self._street.mark_street_acted(seat)
-
     def _betting_round_fully_resolved(self) -> bool:
         """True when this street's betting is complete (including a full check-down). Kept for tests / harness."""
         return self._street.betting_round_complete()
-
-    def _log_table_action(self, seat: int, kind_label: str, chips: int, *, is_blind: bool = False) -> None:
-        self._street.log_street_action(seat, kind_label, chips, is_blind=is_blind)
-
-    def _bet(self, seat: int, amount: int, label: str = "") -> None:
-        self._street.apply_contribution(seat, amount, label)
 
     def _begin_betting_round(self, first: int, *, fresh_street: bool = True) -> None:
         if first < 0:
@@ -327,7 +303,7 @@ class PokerGame(QtCore.QObject):
             # Do not leave `_in_progress` with no actor — `_tick_decision` will never fire
             # `_auto_action_timeout` when `acting_seat < 0` (stall with a live hand).
             if self._live.in_progress:
-                alive = self._remaining_players()
+                alive = self._street.seats_still_in_hand()
                 if len(alive) <= 1:
                     self._award_uncontested(alive[0] if alive else -1)
                     return
@@ -360,7 +336,7 @@ class PokerGame(QtCore.QObject):
             return
         self._live.acting_seat = first
         if fresh_street:
-            self._init_street_acted_for_new_round()
+            self._live.init_street_acted(self._table.participating_list(), self._live.in_hand, self._table.stacks_list())
         self._decision_seconds_left = 20
         self._human_more_time_available = True
         self._decision_timer.start()
@@ -368,27 +344,8 @@ class PokerGame(QtCore.QObject):
         self._maybe_schedule_bot()
 
     def _all_called_or_folded(self) -> bool:
-        return all_called_or_folded(
-            self._table.participating_list(),
-            self._live.in_hand,
-            self._hand_accounting.street_put_in_list(),
-            self._table.stacks_list(),
-            self._hand_accounting.to_call,
-        )
-
-    def _remaining_players(self) -> list[int]:
-        return remaining_players(self._table.participating_list(), self._live.in_hand)
-
-    def _distribute_showdown_side_pots(self) -> list[int]:
-        """Side-pot–aware NLHE distribution by contribution tiers (best hand per slice among contenders)."""
-        return distribute_showdown_side_pots(
-            self._hand_accounting.contrib_totals_list(),
-            self._live.in_hand,
-            self._remaining_players(),
-            self._live.board,
-            self._live.holes,
-            self._hand_evaluator,
-        )
+        """Test hook; delegates to ``StreetBetController.all_street_bets_matched``."""
+        return self._street.all_street_bets_matched()
 
     def _record_completed_hand(
         self,
@@ -401,58 +358,16 @@ class PokerGame(QtCore.QObject):
             self._save_game_state_kv()
             return
         ended = int(time.time() * 1000)
-        board_display = " ".join(pretty_card(c) for c in self._live.board if c[0] >= 2).strip()
-        board_assets = [card_asset(c) for c in self._live.board if c[0] >= 2]
-        n_players = int(self._live.hand_num_dealt) if self._live.hand_num_dealt > 0 else sum(
-            1 for i in range(6) if self._player(i).participating
+        payload = build_hand_log_record(
+            ended_ms=ended,
+            table=self._table,
+            live=self._live,
+            accounting=self._hand_accounting,
+            player=self._player,
+            pot_awards=pot_awards,
+            winners=winners,
+            winning_hand_name=winning_hand_name,
         )
-        aw = list(pot_awards) if pot_awards is not None else [0] * 6
-        players_detail: list[dict[str, Any]] = []
-        for s in range(6):
-            if self._live.hand_num_dealt > 0:
-                if s >= len(self._live.hand_dealt_mask) or not self._live.hand_dealt_mask[s]:
-                    continue
-            elif not self._player(s).participating:
-                continue
-            h0, h1 = self._live.holes[s]
-            players_detail.append(
-                {
-                    "seat": int(s),
-                    "contrib": int(self._hand_accounting.contrib_at(s)),
-                    "won": int(aw[s]),
-                    "hole_svg1": card_asset(h0),
-                    "hole_svg2": card_asset(h1),
-                    "total_bankroll": int(self._player(s).bankroll_off_table + self._player(s).stack_on_table),
-                }
-            )
-        board_codes: list[int] = []
-        for i in range(5):
-            if i < len(self._live.board):
-                r, s = self._live.board[i]
-                board_codes.append(_card_tuple_to_wire_int((r, s)))
-            else:
-                board_codes.append(-1)
-        payload: dict[str, Any] = {
-            "startedMs": int(self._hand_accounting.history_started_ms()),
-            "endedMs": ended,
-            "numPlayers": int(n_players),
-            "boardDisplay": board_display,
-            "boardAssets": board_assets,
-            "boardCardCodes": board_codes,
-            "winners": [int(x) for x in winners],
-            "sbSize": int(self._table.small_blind),
-            "bbSize": int(self._table.big_blind),
-            "buttonSeat": int(self._live.button_seat),
-            "sbSeat": int(self._live.sb_seat),
-            "bbSeat": int(self._live.bb_seat),
-            "sessionKey": 0,
-            "actions": self._hand_accounting.snapshot_actions(),
-            "playersDetail": players_detail,
-            "totalHandWonChips": int(sum(aw)),
-        }
-        wh = str(winning_hand_name or "").strip()
-        if wh:
-            payload["winningHandName"] = wh
         self._hand_history.record_completed_hand(payload)
         # Snapshot stacks for session stats.
         self._bankroll_snapshots_ms.append(int(ended))
@@ -463,7 +378,7 @@ class PokerGame(QtCore.QObject):
         self._save_game_state_kv()
 
     def _advance_street_or_showdown(self) -> None:
-        alive = self._remaining_players()
+        alive = self._street.seats_still_in_hand()
         if len(alive) <= 1:
             self._award_uncontested(alive[0] if alive else -1)
             return
@@ -477,14 +392,14 @@ class PokerGame(QtCore.QObject):
         self._street.reset_street()
         first = first_postflop_actor(
             self._live.button_seat,
-            self._remaining_players(),
+            self._street.seats_still_in_hand(),
             self._table.stacks_list(),
             lambda need_chips: self._table.next_seat_clockwise_from(
                 self._live.button_seat, self._live.in_hand, need_chips=need_chips
             ),
             started_as_heads_up=bool(int(self._live.hand_num_dealt) == 2),
         )
-        if first < 0 and len(self._remaining_players()) >= 2:
+        if first < 0 and len(self._street.seats_still_in_hand()) >= 2:
             # Everyone still in the hand is all-in — no further betting; run out board.
             self._decision_timer.stop()
             self._live.acting_seat = -1
@@ -515,50 +430,6 @@ class PokerGame(QtCore.QObject):
         self._sync_root()
         self._schedule_next_hand_if_idle()
 
-    def _hand_strength_01_seat(self, seat: int) -> float:
-        """Upstream `hand_strength_01_cards` — strength of best 5 of hole + board."""
-        h0, h1 = self._live.holes[seat]
-        if h0[0] < 2 or h1[0] < 2:
-            return 0.0
-        cards7 = [h0, h1] + [c for c in self._live.board if c[0] >= 2]
-        if len(cards7) < 2:
-            return 0.0
-        return rank_tuple_to_strength_01(best_rank_7(cards7))
-
-    def _seat_bot_observation(self, seat: int, *, context: str) -> SeatBotObservation:
-        s = int(seat)
-        h0, h1 = self._live.holes[s]
-        cw = self._ranges.chart_weights_for_hole(s, h0, h1)
-        ppm = self._ranges.play_metric_for_hole(s, h0, h1)
-        if self._live.street == 0:
-            sig = float(ppm)
-            rw = float(cw[1])
-        else:
-            sig = float(self._hand_strength_01_seat(s))
-            rw = float(sig)
-        return SeatBotObservation(
-            context=str(context),
-            seat=s,
-            street=int(self._live.street),
-            stack=int(self._player(s).stack_on_table),
-            archetype_index=int(self._player(s).strategy.archetype_index),
-            tuning=self._player(s).strategy.tuning,
-            need_to_call=int(self._hand_accounting.chips_needed_to_call(s)),
-            to_call=int(self._hand_accounting.to_call),
-            street_put_in_at_seat=int(self._hand_accounting.street_put_in_at(s)),
-            min_raise_increment=int(
-                min_raise_increment_chips(self._table.big_blind, self._hand_accounting.last_raise_increment)
-            ),
-            preflop_blind_level=int(self._hand_accounting.preflop_blind_level),
-            big_blind=int(self._table.big_blind),
-            street_bet=int(self._table.street_bet),
-            max_street_contrib=int(self._max_street_contrib()),
-            signal_continue=float(sig),
-            weight_raise_gate=float(rw),
-            weight_bet_layer=float(cw[2]),
-            preflop_play_metric=float(ppm),
-        )
-
     def _apply_bot_decision(self, seat: int, decision: BotDecision) -> None:
         s = int(seat)
         if decision.kind == BotDecisionKind.FOLD:
@@ -574,18 +445,12 @@ class PokerGame(QtCore.QObject):
             self._check(s)
 
     def _do_showdown(self) -> None:
-        alive = self._remaining_players()
+        alive = self._street.seats_still_in_hand()
         if not alive:
             self._award_uncontested(-1)
             return
-        ranks = {}
-        for s in alive:
-            cards7 = list(self._live.board) + list(self._live.holes[s])
-            ranks[s] = best_rank_7(cards7)
-        best = max(ranks.values())
-        winners = [s for s, r in ranks.items() if r == best]
-        wh_name = rank_tuple_display_name(best)
-        awards = self._distribute_showdown_side_pots()
+        winners, wh_name = showdown_tied_winners(alive, self._live.board, self._live.holes)
+        awards = self._street.distribute_showdown_payouts(self._hand_evaluator)
         for s in range(6):
             self._player(s).receive_from_pot(awards[s])
         self._live.showdown = True
@@ -677,7 +542,7 @@ class PokerGame(QtCore.QObject):
                 return
             self._advance_street_or_showdown()
             return
-        alive = self._remaining_players()
+        alive = self._street.seats_still_in_hand()
         if len(alive) <= 1:
             self._award_uncontested(alive[0] if alive else -1)
 
@@ -689,25 +554,25 @@ class PokerGame(QtCore.QObject):
             QtCore.qWarning("PokerGame: _bot_act with folded/out acting seat; recovering.")
             self._recover_stale_acting_seat()
             return
-        obs = self._seat_bot_observation(s, context="street")
+        obs = build_seat_bot_observation("street", s, self._table, self._live, self._hand_accounting, self._ranges)
         decision = self._seat_bot.decide_street_action(obs, self._rng)
         self._apply_bot_decision(s, decision)
 
     def _fold(self, seat: int) -> None:
         self._live.in_hand[seat] = False
         self._live.street_action_text[seat] = "Fold"
-        self._log_table_action(seat, "Fold", 0)
+        self._street.log_street_action(seat, "Fold", 0)
         self._advance_after_action()
 
     def _check(self, seat: int) -> None:
         self._live.street_action_text[seat] = "Check"
-        self._log_table_action(seat, "Check", 0)
-        self._mark_street_acted(seat)
+        self._street.log_street_action(seat, "Check", 0)
+        self._street.mark_street_acted(seat)
         self._advance_after_action()
 
     def _call(self, seat: int) -> None:
         need = self._hand_accounting.chips_needed_to_call(seat)
-        self._bet(seat, need, label="Call" if need > 0 else "Check")
+        self._street.apply_contribution(seat, need, label="Call" if need > 0 else "Check")
         self._advance_after_action()
 
     def _raise_to(self, seat: int, to_amount: int) -> None:
@@ -717,7 +582,7 @@ class PokerGame(QtCore.QObject):
             return
         prev_max = int(self._hand_accounting.to_call)
         need = max(0, to_amount - self._hand_accounting.street_put_in_at(seat))
-        self._bet(seat, need, label="Raise")
+        self._street.apply_contribution(seat, need, label="Raise")
         new_contrib = int(self._hand_accounting.street_put_in_at(seat))
         self._hand_accounting.bump_to_call_with_seat_street(seat)
         if new_contrib > prev_max:
@@ -729,7 +594,7 @@ class PokerGame(QtCore.QObject):
 
     def _advance_after_action(self) -> None:
         # If only one left, award and stop.
-        alive = self._remaining_players()
+        alive = self._street.seats_still_in_hand()
         if len(alive) <= 1:
             self._award_uncontested(alive[0] if alive else -1)
             return
@@ -756,7 +621,7 @@ class PokerGame(QtCore.QObject):
         """BB preflop branch: returns True if caller must not advance street yet."""
         if self._live.street != 0:
             return False
-        mx = self._max_street_contrib()
+        mx = self._hand_accounting.max_street_contrib()
         if mx != self._hand_accounting.preflop_blind_level or not self._live.bb_preflop_option_open:
             return False
         self._live.bb_preflop_option_open = False
@@ -784,8 +649,8 @@ class PokerGame(QtCore.QObject):
         bb = int(self._live.bb_seat)
         if 0 <= bb < 6:
             self._live.street_action_text[bb] = "Check"
-            self._log_table_action(bb, "Check", 0)
-            self._mark_street_acted(bb)
+            self._street.log_street_action(bb, "Check", 0)
+            self._street.mark_street_acted(bb)
         # Keep actingSeat until the next street begins so _tick_decision does not stop the
         # clock while we are between streets (would strand the hand with no timer).
         self._sync_root()
@@ -796,14 +661,14 @@ class PokerGame(QtCore.QObject):
         if not (0 <= bb < 6 and bb == self.HUMAN_HERO_SEAT):
             return
         inc = min_raise_increment_chips(self._table.big_blind, self._hand_accounting.last_raise_increment)
-        if inc <= 0 or self._max_street_contrib() != self._hand_accounting.preflop_blind_level or self._player(bb).stack_on_table <= 0:
+        if inc <= 0 or self._hand_accounting.max_street_contrib() != self._hand_accounting.preflop_blind_level or self._player(bb).stack_on_table <= 0:
             self._finish_bb_preflop_check()
             return
         c = int(max(inc, min(int(chips_to_add), int(self._player(bb).stack_on_table))))
         if c < inc:
             self._finish_bb_preflop_check()
             return
-        self._bet(bb, c, label="Raise")
+        self._street.apply_contribution(bb, c, label="Raise")
         self._hand_accounting.last_raise_increment = int(c)
         self._hand_accounting.bump_to_call_with_seat_street(bb)
         self._live.bb_preflop_option_open = False
@@ -820,12 +685,14 @@ class PokerGame(QtCore.QObject):
     def _bot_bb_preflop_option(self, bb: int) -> bool:
         if self._player(bb).stack_on_table <= 0:
             return False
-        obs = self._seat_bot_observation(int(bb), context="bb_preflop_option")
+        obs = build_seat_bot_observation(
+            "bb_preflop_option", int(bb), self._table, self._live, self._hand_accounting, self._ranges
+        )
         d = self._seat_bot.decide_bb_preflop_option(obs, self._rng)
         self._decision_timer.stop()
         if d.kind == BotDecisionKind.BB_PREFLOP_RAISE:
             inc = int(d.bb_raise_chips)
-            self._bet(bb, inc, label="Raise")
+            self._street.apply_contribution(bb, inc, label="Raise")
             self._hand_accounting.last_raise_increment = int(inc)
             self._hand_accounting.bump_to_call_with_seat_street(bb)
             self._sync_root()
@@ -835,8 +702,8 @@ class PokerGame(QtCore.QObject):
             self._begin_betting_round(first, fresh_street=False)
             return True
         self._live.street_action_text[bb] = "Check"
-        self._log_table_action(bb, "Check", 0)
-        self._mark_street_acted(bb)
+        self._street.log_street_action(bb, "Check", 0)
+        self._street.mark_street_acted(bb)
         self._sync_root()
         return False
 
@@ -1505,7 +1372,7 @@ class PokerGame(QtCore.QObject):
             sb_open = int(self._table.street_bet)
             min_open = sb_open if stack0 >= sb_open else max(1, stack0)
             chips = int(max(min_open, min(int(amount), stack0)))
-            self._bet(hs, chips, label="Raise")
+            self._street.apply_contribution(hs, chips, label="Raise")
             self._hand_accounting.bump_to_call_with_seat_street(hs)
             self._hand_accounting.last_raise_increment = int(chips)
             if self._live.street == 0 and self._hand_accounting.to_call > self._hand_accounting.preflop_blind_level:
