@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 
 from texasholdemgym.backend import bot_strategy
-from texasholdemgym.backend.poker_game import _StrategyParams
+from texasholdemgym.backend.game_table import StrategyTuning
 
 
 def test_bot_strategy_preset_count_and_names_length():
@@ -19,7 +19,7 @@ def test_bot_strategy_always_call_has_zero_preflop_postflop_exponents():
 
 
 def test_bot_strategy_apply_preset_maps_gto_params_to_seat_fields():
-    sp = _StrategyParams()
+    sp = StrategyTuning()
     bot_strategy.apply_bot_params_to_strategy_fields(sp, bot_strategy.params_for_index(8))
     assert sp.preflopExponent > 1.0
     assert sp.bbCheckraiseBonus > 0.0
@@ -27,7 +27,7 @@ def test_bot_strategy_apply_preset_maps_gto_params_to_seat_fields():
 
 def test_bot_strategy_preflop_continue_probability_is_bool():
     rng = random.Random(42)
-    p = _StrategyParams()
+    p = StrategyTuning()
     p.preflopExponent = 2.0
     assert bot_strategy.bot_preflop_continue_p(p, 1.0, rng) is True
     rng2 = random.Random(0)

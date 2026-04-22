@@ -238,7 +238,7 @@ class Trainer(QtCore.QObject):
         return ["open", "vs_3bet", "sb_vs_btn"] if position else ["open"]
 
     @QtCore.Slot(str, result=bool)
-    def loadPreflopRanges(self, url: str) -> bool:
+    def loadPreflopRanges(self, _url: str) -> bool:
         return True
 
     @QtCore.Slot(str, str)
@@ -271,7 +271,7 @@ class Trainer(QtCore.QObject):
         )
 
     @QtCore.Slot(str, result=bool)
-    def loadFlopSpots(self, url: str) -> bool:
+    def loadFlopSpots(self, _url: str) -> bool:
         return True
 
     @QtCore.Slot(str)
@@ -297,7 +297,7 @@ class Trainer(QtCore.QObject):
         return self._finish_answer("flop", g, f, 0.12)
 
     @QtCore.Slot(str, result=bool)
-    def loadTurnSpots(self, url: str) -> bool:
+    def loadTurnSpots(self, _url: str) -> bool:
         return True
 
     @QtCore.Slot(str)
@@ -324,7 +324,7 @@ class Trainer(QtCore.QObject):
         return self._finish_answer("turn", g, f, 0.08)
 
     @QtCore.Slot(str, result=bool)
-    def loadRiverSpots(self, url: str) -> bool:
+    def loadRiverSpots(self, _url: str) -> bool:
         return True
 
     @QtCore.Slot(str)

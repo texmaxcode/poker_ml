@@ -184,7 +184,7 @@ def test_qml_game_screen_acting_seat_matches_engine_after_set_root(tmp_path, mon
         poker_game.setRootObject(gs)
         poker_game.beginNewHand()
         assert poker_game.gameInProgress()
-        eng_seat = int(poker_game._acting_seat)
+        eng_seat = int(poker_game._live.acting_seat)
         p = QtQml.QQmlProperty(gs, "actingSeat")
         assert p.isValid()
         qml_seat = int(p.read())
@@ -227,11 +227,17 @@ def test_qml_late_set_root_syncs_ui_after_hand_started_off_screen(tmp_path, monk
         gs = _find_game_screen(win)
         assert gs is not None
         poker_game.setRootObject(gs)
-        poker_game.beginNewHand()
+        # With a QML root, `_sync_root_inner` pumps events (bounded ms). Zero-delay bots can run an
+        # entire deal to showdown inside a single `beginNewHand` before it returns, leaving the table
+        # briefly idle — retry so the regression still checks a live hand + `actingSeat` sync.
+        for _ in range(5):
+            poker_game.beginNewHand()
+            if poker_game.gameInProgress():
+                break
         assert poker_game.gameInProgress()
         p = QtQml.QQmlProperty(gs, "actingSeat")
         # Timers may advance bots while Main.qml loads; UI must match engine, not a stale snapshot.
-        assert int(p.read()) == int(poker_game._acting_seat)
+        assert int(p.read()) == int(poker_game._live.acting_seat)
     finally:
         if engine is not None:
             engine.deleteLater()
@@ -271,7 +277,7 @@ def test_qml_game_screen_pot_matches_engine_contribution_total(tmp_path, monkeyp
         poker_game.beginNewHand()
         pot_q = QtQml.QQmlProperty(gs, "pot")
         assert pot_q.isValid()
-        assert int(pot_q.read()) == int(sum(poker_game._contrib_total))
+        assert int(pot_q.read()) == int(poker_game._hand_accounting.total_contrib_chips())
     finally:
         if engine is not None:
             engine.deleteLater()

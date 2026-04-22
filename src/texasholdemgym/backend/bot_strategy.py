@@ -112,7 +112,7 @@ def params_for_index(idx: int) -> BotParams:
 
 
 def apply_bot_params_to_strategy_fields(p: Any, bp: BotParams) -> None:
-    """Copy into `_StrategyParams`-style object (camelCase attrs)."""
+    """Copy into `StrategyTuning`-style object (camelCase attrs)."""
     p.preflopExponent = float(bp.preflop_exponent)
     p.postflopExponent = float(bp.postflop_exponent)
     p.facingRaiseBonus = float(bp.facing_raise_bonus)

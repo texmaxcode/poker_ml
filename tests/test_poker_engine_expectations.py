@@ -9,16 +9,17 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+from PySide6 import QtCore
 
 
 def _decision_seconds_displayed(game) -> int:
     """Mirror `_sync_root` → `decisionSecondsLeft` for QML."""
     hs = int(game.HUMAN_HERO_SEAT)
-    human_bb = bool(game._bb_preflop_waiting)
+    human_bb = bool(game._live.bb_preflop_waiting)
     human_acting = (
-        game._acting_seat == hs
+        game._live.acting_seat == hs
         and game._interactive_human
-        and game._in_hand[hs]
+        and game._live.in_hand[hs]
         and not game._human_sitting_out
     )
     return int(game._decision_seconds_left if (human_acting or human_bb) else 0)
@@ -31,18 +32,18 @@ def test_hud_decision_seconds_zero_on_bot_turn_nonzero_on_hero_turn():
     g = PokerGame()
     try:
         g._interactive_human = True
-        g._acting_seat = 3
+        g._live.acting_seat = 3
         g._decision_seconds_left = 18
-        g._in_hand[3] = True
-        g._in_hand[0] = True
+        g._live.in_hand[3] = True
+        g._live.in_hand[0] = True
         assert _decision_seconds_displayed(g) == 0
 
-        g._acting_seat = 0
-        g._in_hand[0] = True
+        g._live.acting_seat = 0
+        g._live.in_hand[0] = True
         assert _decision_seconds_displayed(g) == 18
 
-        g._bb_preflop_waiting = True
-        g._acting_seat = -1
+        g._live.bb_preflop_waiting = True
+        g._live.acting_seat = -1
         g._decision_seconds_left = 12
         assert _decision_seconds_displayed(g) == 12
     finally:
@@ -55,20 +56,20 @@ def test_begin_betting_round_invalid_first_seat_awards_uncontested_when_one_play
 
     g = PokerGame(db=None, hand_history=None)
     try:
-        g._in_progress = True
-        g._showdown = False
+        g._live.in_progress = True
+        g._live.showdown = False
         for i in range(6):
-            g._seat_participating[i] = True
-            g._in_hand[i] = i == 0
-        g._contrib_total = [100 if i == 0 else 0 for i in range(6)]
-        g._button_seat = 0
-        g._sb_seat = 0
-        g._bb_seat = 0
-        g._street = 0
-        g._bb_preflop_option_open = False
+            g._player(i).participating = True
+            g._live.in_hand[i] = i == 0
+        g._hand_accounting.set_contrib_totals([100 if i == 0 else 0 for i in range(6)])
+        g._live.button_seat = 0
+        g._live.sb_seat = 0
+        g._live.bb_seat = 0
+        g._live.street = 0
+        g._live.bb_preflop_option_open = False
         g._begin_betting_round(-1)
         assert not g.gameInProgress()
-        assert g._acting_seat < 0
+        assert g._live.acting_seat < 0
     finally:
         g.deleteLater()
 
@@ -81,11 +82,30 @@ def test_bot_act_recover_from_stale_acting_seat():
     try:
         g.beginNewHand()
         assert g.gameInProgress()
-        seat = int(g._acting_seat)
+        seat = int(g._live.acting_seat)
         assert 0 <= seat < 6
-        g._in_hand[seat] = False
+        g._live.in_hand[seat] = False
         g._bot_act()
-        assert not g.gameInProgress() or g._acting_seat < 0 or g._in_hand[g._acting_seat]
+        assert not g.gameInProgress() or g._live.acting_seat < 0 or g._live.in_hand[g._live.acting_seat]
+    finally:
+        g.deleteLater()
+
+
+def test_tick_decision_recover_when_acting_seat_negative_while_hand_live():
+    """`acting_seat == -1` with `in_progress` must not strand the table (no timeout / no flop)."""
+    from texasholdemgym.backend.poker_game import PokerGame
+
+    g = PokerGame(db=None, hand_history=None)
+    try:
+        g.setRootObject(QtCore.QObject())
+        g._interactive_human = False
+        g._bot_slow_actions = False
+        g._bot_decision_delay_sec = 0
+        g.beginNewHand()
+        assert g.gameInProgress()
+        g._live.acting_seat = -1
+        g._tick_decision()
+        assert g._live.acting_seat >= 0 or not g.gameInProgress()
     finally:
         g.deleteLater()
 
@@ -98,14 +118,14 @@ def test_auto_action_timeout_folds_hero_when_facing_bet():
         g._interactive_human = True
         g.beginNewHand()
         assert g.gameInProgress()
-        g._acting_seat = int(g.HUMAN_HERO_SEAT)
-        g._in_hand[g.HUMAN_HERO_SEAT] = True
-        g._to_call = 10
-        g._street_put_in[g.HUMAN_HERO_SEAT] = 0
-        g._seat_buy_in[g.HUMAN_HERO_SEAT] = 200
+        g._live.acting_seat = int(g.HUMAN_HERO_SEAT)
+        g._live.in_hand[g.HUMAN_HERO_SEAT] = True
+        g._hand_accounting.to_call = 10
+        g._hand_accounting.set_street_put_in(g.HUMAN_HERO_SEAT, 0)
+        g._player(g.HUMAN_HERO_SEAT).stack_on_table = 200
         g._decision_seconds_left = 0
         g._auto_action_timeout()
-        assert g._in_hand[g.HUMAN_HERO_SEAT] is False
+        assert g._live.in_hand[g.HUMAN_HERO_SEAT] is False
     finally:
         g.deleteLater()
 
@@ -120,17 +140,15 @@ def test_award_uncontested_leaves_table_idle_even_if_history_raises(tmp_path):
     hh = HandHistory(db)
     g = PokerGame(db=db, hand_history=hh)
     try:
-        g._in_progress = True
-        g._showdown = False
+        g._live.in_progress = True
+        g._live.showdown = False
         for i in range(6):
-            g._seat_participating[i] = True
-            g._in_hand[i] = i == 1
-        g._contrib_total = [0, 80, 0, 0, 0, 0]
-        g._seat_buy_in[1] = 200
-        g._hole[1] = ((14, 3), (14, 2))
-        g._hand_log_started_ms = 1
-        g._hand_actions = []
-        g._hand_action_seq = 0
+            g._player(i).participating = True
+            g._live.in_hand[i] = i == 1
+        g._hand_accounting.set_contrib_totals([0, 80, 0, 0, 0, 0])
+        g._player(1).stack_on_table = 200
+        g._live.holes[1] = ((14, 3), (14, 2))
+        g._hand_accounting.begin_action_log(1)
         with patch.object(hh, "record_completed_hand", side_effect=RuntimeError("disk full")):
             with pytest.raises(RuntimeError, match="disk full"):
                 g._award_uncontested(1)

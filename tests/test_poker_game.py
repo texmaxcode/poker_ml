@@ -49,8 +49,8 @@ def test_poker_game_range_grid_hole_cell_matches_qml_convention():
 def test_poker_game_count_eligible_for_deal():
     g = PokerGame()
     try:
-        g._seat_buy_in = [100, 0, 100, 100, 100, 100]
-        g._seat_participating = [True, True, False, True, True, True]
+        g._table.import_stacks([100, 0, 100, 100, 100, 100])
+        g._table.import_participating([True, True, False, True, True, True])
         g._human_sitting_out = False
         assert g._count_eligible_for_deal() == 4
         g._human_sitting_out = True
@@ -64,13 +64,13 @@ def test_poker_game_begin_new_hand_uses_fresh_dealing_mask_not_stale_in_hand():
     game = PokerGame()
     try:
         for i in range(6):
-            game._in_hand[i] = i in (0, 5)
-        game._button_seat = 2
+            game._live.in_hand[i] = i in (0, 5)
+        game._live.button_seat = 2
         game.beginNewHand()
         assert game.gameInProgress()
-        assert game._acting_seat >= 0
-        assert 0 <= game._sb_seat < 6 and 0 <= game._bb_seat < 6
-        assert game._sb_seat != game._bb_seat
+        assert game._live.acting_seat >= 0
+        assert 0 <= game._live.sb_seat < 6 and 0 <= game._live.bb_seat < 6
+        assert game._live.sb_seat != game._live.bb_seat
     finally:
         game.deleteLater()
 
@@ -122,13 +122,13 @@ def test_poker_game_decision_tick_advances_bots_without_separate_bot_timer():
     try:
         g.beginNewHand()
         assert g.gameInProgress()
-        start = int(g._acting_seat)
+        start = int(g._live.acting_seat)
         assert start >= 0
         for _ in range(35):
             g._tick_decision()
-            if int(g._acting_seat) != start or not g.gameInProgress():
+            if int(g._live.acting_seat) != start or not g.gameInProgress():
                 break
-        assert int(g._acting_seat) != start or not g.gameInProgress()
+        assert int(g._live.acting_seat) != start or not g.gameInProgress()
     finally:
         g.deleteLater()
 
@@ -136,10 +136,10 @@ def test_poker_game_decision_tick_advances_bots_without_separate_bot_timer():
 def test_poker_game_seat_position_label_full_ring():
     g = PokerGame()
     try:
-        g._button_seat = 0
-        g._sb_seat = 1
-        g._bb_seat = 2
-        g._seat_participating = [True] * 6
+        g._live.button_seat = 0
+        g._live.sb_seat = 1
+        g._live.bb_seat = 2
+        g._table.import_participating([True] * 6)
         assert g.seatPositionLabel(0) == "BTN"
         assert g.seatPositionLabel(1) == "SB"
         assert g.seatPositionLabel(2) == "BB"
@@ -153,7 +153,7 @@ def test_poker_game_seat_position_label_full_ring():
 def test_poker_game_seat_position_label_before_deal():
     g = PokerGame()
     try:
-        g._bb_seat = -1
+        g._live.bb_seat = -1
         assert g.seatPositionLabel(0) == "—"
     finally:
         g.deleteLater()

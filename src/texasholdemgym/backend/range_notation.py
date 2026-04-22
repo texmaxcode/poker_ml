@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-# Strongest … weakest (matches `PokerGame._hole_to_grid_row_col` / `RangeGrid.qml`).
+# Strongest … weakest (matches `poker_core.hole_grid.hole_to_range_grid_row_col` / `RangeGrid.qml`).
 RANK_ORDER = "AKQJT98765432"
 
 

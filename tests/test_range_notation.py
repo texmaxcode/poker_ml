@@ -1,9 +1,12 @@
 """Preflop range string ↔ 13×13 grid (`range_notation.py`)."""
 
+import pytest
+
 from texasholdemgym.backend import bot_strategy
 from texasholdemgym.backend.range_notation import (
     cell_to_token,
     format_grid_to_range,
+    merge_grids_max,
     parse_range_to_grid,
     rank_index,
 )
@@ -57,3 +60,38 @@ def test_all_strategy_presets_parse():
         for s in trip:
             g = parse_range_to_grid(s)
             assert len(g) == 169
+
+
+def test_rank_index_rejects_invalid() -> None:
+    with pytest.raises(ValueError, match="bad rank"):
+        rank_index("XX")
+    with pytest.raises(ValueError, match="bad rank"):
+        rank_index("ab")
+
+
+def test_cell_to_token_out_of_bounds() -> None:
+    assert cell_to_token(-1, 0) == ""
+    assert cell_to_token(0, 14) == ""
+
+
+def test_parse_range_empty_raises() -> None:
+    with pytest.raises(ValueError, match="empty"):
+        parse_range_to_grid("")
+    with pytest.raises(ValueError, match="empty"):
+        parse_range_to_grid("   ,  ,  ")
+
+
+def test_parse_kqs_plus_non_ace_suited_expansion() -> None:
+    g = parse_range_to_grid("KQs+")
+    assert g[1 * 13 + 2] > 0.5
+
+
+def test_merge_grids_max_skips_wrong_length() -> None:
+    base = parse_range_to_grid("AA")
+    out = merge_grids_max(base, [0.0] * 10)
+    assert out == base
+
+
+def test_parse_bad_token_raises() -> None:
+    with pytest.raises(ValueError, match="bad token"):
+        parse_range_to_grid("not_a_hand_token")
